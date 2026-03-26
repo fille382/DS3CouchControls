@@ -1,0 +1,4 @@
+whisper_level.txt
+whisper_result.txt
+__pycache__/
+*.pyc
