@@ -2,6 +2,9 @@
 #SingleInstance Force
 Persistent
 
+; Make DPI-aware so screen capture coordinates match actual pixels
+DllCall("SetProcessDPIAware")
+
 ; ============================================================
 ;  DS3Mouse — DualShock 3 (XInput via DsHidMini) as Mouse
 ; ============================================================
@@ -609,6 +612,113 @@ class RecordingOverlay {
 }
 
 ; ============================================================
+;  Zoom Lens — custom magnifier using GDI BitBlt/StretchBlt
+; ============================================================
+class ZoomLens {
+    static active := false
+    static gui := 0
+    static timer := 0
+    static screenDC := 0
+    static memDC := 0
+    static hBmp := 0
+    static oldBmp := 0
+    static LensSize := 700
+    static ZoomFactor := 2.5
+    static CaptureSize := 0
+
+    static Init() {
+        ZoomLens.CaptureSize := Integer(ZoomLens.LensSize / ZoomLens.ZoomFactor)
+
+        ZoomLens.gui := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
+        ZoomLens.gui.BackColor := "000000"
+        ZoomLens.gui.Show("NoActivate Hide x0 y0 w" ZoomLens.LensSize " h" ZoomLens.LensSize)
+        hRgn := DllCall("CreateEllipticRgn", "Int", 0, "Int", 0
+            , "Int", ZoomLens.LensSize, "Int", ZoomLens.LensSize, "Ptr")
+        DllCall("SetWindowRgn", "Ptr", ZoomLens.gui.Hwnd, "Ptr", hRgn, "Int", 1)
+
+        ZoomLens.screenDC := DllCall("GetDC", "Ptr", 0, "Ptr")
+        ZoomLens.memDC := DllCall("CreateCompatibleDC", "Ptr", ZoomLens.screenDC, "Ptr")
+        ZoomLens.hBmp := DllCall("CreateCompatibleBitmap", "Ptr", ZoomLens.screenDC
+            , "Int", ZoomLens.LensSize, "Int", ZoomLens.LensSize, "Ptr")
+        ZoomLens.oldBmp := DllCall("SelectObject", "Ptr", ZoomLens.memDC, "Ptr", ZoomLens.hBmp, "Ptr")
+    }
+
+    static Toggle() {
+        ZoomLens.active := !ZoomLens.active
+        if ZoomLens.active {
+            ZoomLens.gui.Show("NoActivate")
+            ZoomLens.timer := ObjBindMethod(ZoomLens, "_Update")
+            SetTimer(ZoomLens.timer, 16)
+        } else {
+            if ZoomLens.timer
+                SetTimer(ZoomLens.timer, 0)
+            ZoomLens.gui.Hide()
+        }
+    }
+
+    static _Update() {
+        if !ZoomLens.active
+            return
+
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&mx, &my)
+
+        ls := ZoomLens.LensSize
+        cs := ZoomLens.CaptureSize
+        half := cs // 2
+
+        DllCall("SetStretchBltMode", "Ptr", ZoomLens.memDC, "Int", 4)
+        DllCall("StretchBlt", "Ptr", ZoomLens.memDC
+            , "Int", 0, "Int", 0, "Int", ls, "Int", ls
+            , "Ptr", ZoomLens.screenDC
+            , "Int", mx - half, "Int", my - half, "Int", cs, "Int", cs
+            , "UInt", 0x00CC0020)
+
+        ; Crosshair
+        center := ls // 2
+        hPen := DllCall("CreatePen", "Int", 0, "Int", 1, "UInt", 0x4444FF, "Ptr")
+        oldPen := DllCall("SelectObject", "Ptr", ZoomLens.memDC, "Ptr", hPen, "Ptr")
+        DllCall("MoveToEx", "Ptr", ZoomLens.memDC, "Int", center - 12, "Int", center, "Ptr", 0)
+        DllCall("LineTo", "Ptr", ZoomLens.memDC, "Int", center + 13, "Int", center)
+        DllCall("MoveToEx", "Ptr", ZoomLens.memDC, "Int", center, "Int", center - 12, "Ptr", 0)
+        DllCall("LineTo", "Ptr", ZoomLens.memDC, "Int", center, "Int", center + 13)
+        DllCall("SelectObject", "Ptr", ZoomLens.memDC, "Ptr", oldPen, "Ptr")
+        DllCall("DeleteObject", "Ptr", hPen)
+
+        ; Border
+        hPenB := DllCall("CreatePen", "Int", 0, "Int", 3, "UInt", 0xF7C34F, "Ptr")
+        oldPenB := DllCall("SelectObject", "Ptr", ZoomLens.memDC, "Ptr", hPenB, "Ptr")
+        hNull := DllCall("GetStockObject", "Int", 5, "Ptr")
+        oldBr := DllCall("SelectObject", "Ptr", ZoomLens.memDC, "Ptr", hNull, "Ptr")
+        DllCall("Ellipse", "Ptr", ZoomLens.memDC, "Int", 1, "Int", 1, "Int", ls - 1, "Int", ls - 1)
+        DllCall("SelectObject", "Ptr", ZoomLens.memDC, "Ptr", oldBr, "Ptr")
+        DllCall("SelectObject", "Ptr", ZoomLens.memDC, "Ptr", oldPenB, "Ptr")
+        DllCall("DeleteObject", "Ptr", hPenB)
+
+        ; Blit to window
+        winDC := DllCall("GetDC", "Ptr", ZoomLens.gui.Hwnd, "Ptr")
+        DllCall("BitBlt", "Ptr", winDC
+            , "Int", 0, "Int", 0, "Int", ls, "Int", ls
+            , "Ptr", ZoomLens.memDC
+            , "Int", 0, "Int", 0, "UInt", 0x00CC0020)
+        DllCall("ReleaseDC", "Ptr", ZoomLens.gui.Hwnd, "Ptr", winDC)
+
+        ; Position offset from cursor
+        winX := mx + 30
+        winY := my + 30
+        MonitorGetWorkArea(, &mL, &mT, &mR, &mB)
+        if (winX + ls > mR)
+            winX := mx - ls - 30
+        if (winY + ls > mB)
+            winY := my - ls - 30
+
+        DllCall("SetWindowPos", "Ptr", ZoomLens.gui.Hwnd, "Ptr", -1
+            , "Int", winX, "Int", winY, "Int", 0, "Int", 0
+            , "UInt", 0x0010 | 0x0001)
+    }
+}
+
+; ============================================================
 ;  XInput via DLL
 ; ============================================================
 class XI {
@@ -855,6 +965,7 @@ if !testState.connected {
 HUD.Init()
 ClipboardToast.Init()
 RecordingOverlay.Init()
+ZoomLens.Init()
 
 try TraySetIcon(A_ScriptDir "\DS3Mouse.ico")
 A_IconTip := "DS3Mouse — Active (XInput " Config.UserIndex ")"
@@ -868,11 +979,22 @@ A_TrayMenu.Add("Reload", (*) => Reload())
 A_TrayMenu.Add("Exit", (*) => (Whisper.Shutdown(), ExitApp()))
 ToolTip("DS3Mouse started (XInput)`nController index: " Config.UserIndex "`nLoading Whisper...")
 
+; Launch ZoomLens as separate process
+zoomScript := A_ScriptDir "\ZoomLens.ahk"
+if FileExist(zoomScript)
+    Run('"' A_AhkPath '" "' zoomScript '"',, "Hide")
+
 ; Launch Whisper server
 Whisper.LaunchServer()
 
 ; Clean up on exit
-OnExit((*) => Whisper.Shutdown())
+OnExit(ShutdownAll)
+ShutdownAll(*) {
+    Whisper.Shutdown()
+    ; Close ZoomLens
+    DetectHiddenWindows(true)
+    try WinClose(A_ScriptDir "\ZoomLens.ahk ahk_class AutoHotkey")
+}
 
 SetTimer(MainLoop, Config.PollRate)
 
@@ -930,8 +1052,9 @@ MainLoop() {
 
     ; ── D-PAD (only real d-pad presses, ignore if left stick is active) ──
     ; XInput leaks stick input into d-pad bits — suppress d-pad when stick moves
+    ; BUT: always allow d-pad when L1 is held (modifier commands need d-pad)
     stickMagSq := gp.lx * gp.lx + gp.ly * gp.ly
-    if (stickMagSq < 1000000)  ; ~1000 magnitude — barely touching
+    if (l1Held || stickMagSq < 1000000)  ; L1 bypasses stick filter
         HandleDPad(gp.buttons, l1Held)
     else {
         ; Kill any active d-pad state when stick is moving
@@ -956,11 +1079,13 @@ BtnHeld(current, mask) {
     return (current & mask) != 0
 }
 
-; Send a key while releasing phantom Ctrl from DsHidMini
-; DsHidMini XInput sends vkC8 as LControl when L1 is held,
-; which corrupts all Send() calls. This releases Ctrl first.
+; Send a key while releasing ALL phantom modifiers from DsHidMini XInput.
+; DsHidMini sends vkC8 (LCtrl) and possibly other virtual keys when
+; controller buttons are held, corrupting Send(). This releases everything first.
 CleanSend(keys) {
-    Send("{LCtrl Up}" keys)
+    SendInput("{LCtrl Up}{RCtrl Up}{LShift Up}{RShift Up}{LAlt Up}{RAlt Up}{LWin Up}{RWin Up}")
+    Sleep(10)
+    SendInput(keys)
 }
 
 ; ============================================================
@@ -1176,25 +1301,37 @@ DPadAction(dpad, l1Held) {
 
     if l1Held {
         mediaScript := A_ScriptDir "\media_control.py"
-        if (dpad & XINPUT.DPAD_UP)
-            CleanSend("{Volume_Up}")
-        if (dpad & XINPUT.DPAD_DOWN)
-            CleanSend("{Volume_Down}")
-        if (dpad & XINPUT.DPAD_LEFT)
+        if (dpad & XINPUT.DPAD_UP) {
+            ToolTip("L1+UP: Volume Up")
+            SetTimer(() => ToolTip(), -1000)
+            Run('pythonw -c "import ctypes; ctypes.windll.user32.keybd_event(0xAF,0,0,0); ctypes.windll.user32.keybd_event(0xAF,0,2,0)"',, "Hide")
+        }
+        if (dpad & XINPUT.DPAD_DOWN) {
+            ToolTip("L1+DOWN: Volume Down")
+            SetTimer(() => ToolTip(), -1000)
+            Run('pythonw -c "import ctypes; ctypes.windll.user32.keybd_event(0xAE,0,0,0); ctypes.windll.user32.keybd_event(0xAE,0,2,0)"',, "Hide")
+        }
+        if (dpad & XINPUT.DPAD_LEFT) {
+            ToolTip("L1+LEFT: Prev Track")
+            SetTimer(() => ToolTip(), -1000)
             Run('pythonw "' mediaScript '" prev',, "Hide")
-        if (dpad & XINPUT.DPAD_RIGHT)
+        }
+        if (dpad & XINPUT.DPAD_RIGHT) {
+            ToolTip("L1+RIGHT: Next Track")
+            SetTimer(() => ToolTip(), -1000)
             Run('pythonw "' mediaScript '" next',, "Hide")
+        }
         return
     } else {
         {
             if (dpad & XINPUT.DPAD_UP)
-                Send("{Up}")
+                CleanSend("{Up}")
             if (dpad & XINPUT.DPAD_DOWN)
-                Send("{Down}")
+                CleanSend("{Down}")
             if (dpad & XINPUT.DPAD_LEFT)
-                Send("{Left}")
+                CleanSend("{Left}")
             if (dpad & XINPUT.DPAD_RIGHT)
-                Send("{Right}")
+                CleanSend("{Right}")
         }
     }
 }
@@ -1258,14 +1395,14 @@ HandleButtons(buttons, l1Held) {
             CleanSend("^a{Delete}")
     } else {
         if (sqNow && !State.SquareHeld) {
-            Send("{Backspace}")
+            CleanSend("{Backspace}")
             State.SquareHeld := true
             State.SquareRepeatTick := 0
         } else if (sqNow && State.SquareHeld) {
             State.SquareRepeatTick += Config.PollRate
             if (State.SquareRepeatTick >= 30) {
                 State.SquareRepeatTick := 0
-                Send("{Backspace}")
+                CleanSend("{Backspace}")
             }
         } else if !sqNow {
             State.SquareHeld := false
@@ -1279,12 +1416,12 @@ HandleButtons(buttons, l1Held) {
             CleanSend("{Tab}")
         } else {
             if State.TriangleNextPaste {
-                Send("^v")
+                CleanSend("^v")
                 State.TriangleNextPaste := false
                 ToolTip("Pasted")
                 SetTimer(() => ToolTip(), -1500)
             } else {
-                Send("^c")
+                CleanSend("^c")
                 Sleep(50)
                 State.TriangleNextPaste := true
                 ToolTip("Copied")
@@ -1320,46 +1457,33 @@ HandleButtons(buttons, l1Held) {
 
     ; Start → Windows Start menu
     if BtnPressed(buttons, XINPUT.START)
-        Send("{LWin}")
+        CleanSend("{LWin}")
 
     ; Back/Select → Alt+Tab window switcher
     if BtnPressed(buttons, XINPUT.BACK) {
         if State.AltTabActive {
             ; Already open — tab to next window and reset timer
-            Send("{Blind}{Tab}")
+            SendInput("{Blind}{Tab}")
             SetTimer(AltTabConfirm, -5000)
         } else {
-            ; Open Alt+Tab switcher (hold Alt down)
-            Send("{Alt Down}{Tab}")
+            ; Open Alt+Tab switcher — release phantom modifiers first
+            SendInput("{LCtrl Up}{RCtrl Up}{LShift Up}{RShift Up}")
+            Sleep(10)
+            SendInput("{Alt Down}{Tab}")
             State.AltTabActive := true
             SetTimer(AltTabConfirm, -5000)
         }
     }
 
-    ; L3 → toggle sniper + Windows Magnifier zoom
+    ; L3 → toggle sniper + zoom
     l3Now := BtnHeld(buttons, XINPUT.LEFT_THUMB)
     if (l3Now && !State.PrevL3) {
-        State.Sniper := !State.Sniper
         ; Block d-pad briefly so stick wiggle during click doesn't send arrows
         State.DpadActive := false
-        State.DpadReleaseTime := A_TickCount + 200  ; 200ms cooldown
-        if State.Sniper {
-            Sleep(50)
-            Send("{LWin Down}")
-            Sleep(100)
-            Send("{=}")
-            Sleep(100)
-            Send("{LWin Up}")
-            ToolTip("Sniper + Zoom ON")
-        } else {
-            Sleep(50)
-            Send("{LWin Down}")
-            Sleep(100)
-            Send("{-}")
-            Sleep(100)
-            Send("{LWin Up}")
-            ToolTip("Sniper + Zoom OFF")
-        }
+        State.DpadReleaseTime := A_TickCount + 400
+        State.Sniper := !State.Sniper
+        ZoomLens.Toggle()
+        ToolTip(State.Sniper ? "Sniper + Zoom ON" : "Sniper + Zoom OFF")
         SetTimer(() => ToolTip(), -1500)
     }
     State.PrevL3 := l3Now
@@ -1438,81 +1562,81 @@ ExecuteVoiceCommand(text) {
     ; Match against known commands
     matched := true
     if RegExMatch(cmd, "^(enter|confirm|send|submit)$")
-        Send("{Enter}")
+        CleanSend("{Enter}")
     else if RegExMatch(cmd, "^(escape|cancel|close|exit|esc)$")
-        Send("{Escape}")
+        CleanSend("{Escape}")
     else if RegExMatch(cmd, "^(copy)$")
-        Send("^c")
+        CleanSend("^c")
     else if RegExMatch(cmd, "^(paste)$")
-        Send("^v")
+        CleanSend("^v")
     else if RegExMatch(cmd, "^(cut)$")
-        Send("^x")
+        CleanSend("^x")
     else if RegExMatch(cmd, "^(undo)$")
-        Send("^z")
+        CleanSend("^z")
     else if RegExMatch(cmd, "^(redo)$")
-        Send("^y")
+        CleanSend("^y")
     else if RegExMatch(cmd, "^(select all|select everything)$")
-        Send("^a")
+        CleanSend("^a")
     else if RegExMatch(cmd, "^(backspace|delete that|erase)$")
-        Send("{Backspace}")
+        CleanSend("{Backspace}")
     else if RegExMatch(cmd, "^(delete)$")
-        Send("{Delete}")
+        CleanSend("{Delete}")
     else if RegExMatch(cmd, "^(space|spacebar)$")
-        Send("{Space}")
+        CleanSend("{Space}")
     else if RegExMatch(cmd, "^(tab|next field)$")
-        Send("{Tab}")
+        CleanSend("{Tab}")
     else if RegExMatch(cmd, "^(shift tab|previous field)$")
-        Send("+{Tab}")
+        CleanSend("+{Tab}")
     else if RegExMatch(cmd, "^(home)$")
-        Send("{Home}")
+        CleanSend("{Home}")
     else if RegExMatch(cmd, "^(end)$")
-        Send("{End}")
+        CleanSend("{End}")
     else if RegExMatch(cmd, "^(page up)$")
-        Send("{PgUp}")
+        CleanSend("{PgUp}")
     else if RegExMatch(cmd, "^(page down)$")
-        Send("{PgDn}")
+        CleanSend("{PgDn}")
     else if RegExMatch(cmd, "^(up|arrow up)$")
-        Send("{Up}")
+        CleanSend("{Up}")
     else if RegExMatch(cmd, "^(down|arrow down)$")
-        Send("{Down}")
+        CleanSend("{Down}")
     else if RegExMatch(cmd, "^(left|arrow left)$")
-        Send("{Left}")
+        CleanSend("{Left}")
     else if RegExMatch(cmd, "^(right|arrow right)$")
-        Send("{Right}")
+        CleanSend("{Right}")
     else if RegExMatch(cmd, "^(save)$")
-        Send("^s")
+        CleanSend("^s")
     else if RegExMatch(cmd, "^(find|search)$")
-        Send("^f")
+        CleanSend("^f")
     else if RegExMatch(cmd, "^(new tab)$")
-        Send("^t")
+        CleanSend("^t")
     else if RegExMatch(cmd, "^(close tab)$")
-        Send("^w")
+        CleanSend("^w")
     else if RegExMatch(cmd, "^(reopen tab|restore tab)$")
-        Send("^+t")
+        CleanSend("^+t")
     else if RegExMatch(cmd, "^(next tab)$")
-        Send("^{Tab}")
+        CleanSend("^{Tab}")
     else if RegExMatch(cmd, "^(previous tab)$")
-        Send("^+{Tab}")
+        CleanSend("^+{Tab}")
     else if RegExMatch(cmd, "^(refresh|reload)$")
-        Send("{F5}")
+        CleanSend("{F5}")
     else if RegExMatch(cmd, "^(full ?screen)$")
-        Send("{F11}")
+        CleanSend("{F11}")
     else if RegExMatch(cmd, "^(minimize)$")
         WinMinimize("A")
     else if RegExMatch(cmd, "^(maximize)$")
         WinMaximize("A")
     else if RegExMatch(cmd, "^(close window|alt f4)$")
-        Send("!{F4}")
+        CleanSend("!{F4}")
     else if RegExMatch(cmd, "^(screenshot|print screen)$")
-        Send("{PrintScreen}")
+        CleanSend("{PrintScreen}")
     else if RegExMatch(cmd, "^(snip|snipping)$")
-        Send("#+s")
+        CleanSend("#+s")
     else if RegExMatch(cmd, "^(lock|lock screen)$")
-        Send("#l")
+        CleanSend("#l")
     else if RegExMatch(cmd, "^(desktop|show desktop)$")
-        Send("#d")
+        CleanSend("#d")
     else if RegExMatch(cmd, "^(task manager)$")
-        Send("^+{Escape}")
+        CleanSend("^+{Escape}")
     ; App launchers
     else if RegExMatch(cmd, "^(open |launch |start )?(spotify)$")
         Run("spotify:")
@@ -1522,7 +1646,7 @@ ExecuteVoiceCommand(text) {
         Run("discord:")
     else if RegExMatch(cmd, "^(open |launch |start )?(explorer|file ?manager|files)$")
         Run("explorer.exe")
-    ; Media controls (Alt+F-keys — works globally with Spotify etc.)
+    ; Media controls (via Python — bypasses phantom keys entirely)
     else if RegExMatch(cmd, "^(play|pause|paus|play pause|spela|pausa)$")
         Run('pythonw "' A_ScriptDir '\media_control.py" play',, "Hide")
     else if RegExMatch(cmd, "^(next|next track|skip|nästa|nästa låt)$")
@@ -1530,27 +1654,27 @@ ExecuteVoiceCommand(text) {
     else if RegExMatch(cmd, "^(previous|previous track|go back|förra|förra låten|tillbaka)$")
         Run('pythonw "' A_ScriptDir '\media_control.py" prev',, "Hide")
     else if RegExMatch(cmd, "^(mute|unmute)$")
-        Send("{Volume_Mute}")
+        CleanSend("{Volume_Mute}")
     else if RegExMatch(cmd, "^(volume up|louder)$")
-        Send("{Volume_Up 5}")
+        CleanSend("{Volume_Up 5}")
     else if RegExMatch(cmd, "^(volume down|quieter|softer)$")
-        Send("{Volume_Down 5}")
+        CleanSend("{Volume_Down 5}")
     ; Browser zoom
     else if RegExMatch(cmd, "^(zoom in)$")
-        Send("^{=}")
+        CleanSend("^{=}")
     else if RegExMatch(cmd, "^(zoom out)$")
-        Send("^{-}")
+        CleanSend("^{-}")
     else if RegExMatch(cmd, "^(zoom reset|reset zoom)$")
-        Send("^0")
+        CleanSend("^0")
     ; Window snapping
     else if RegExMatch(cmd, "^(snap left|left half)$")
-        Send("#{Left}")
+        CleanSend("#{Left}")
     else if RegExMatch(cmd, "^(snap right|right half)$")
-        Send("#{Right}")
+        CleanSend("#{Right}")
     else if RegExMatch(cmd, "^(snap up|top half)$")
-        Send("#{Up}")
+        CleanSend("#{Up}")
     else if RegExMatch(cmd, "^(snap down|bottom half)$")
-        Send("#{Down}")
+        CleanSend("#{Down}")
     ; More app launchers
     else if RegExMatch(cmd, "^(open |launch |start )?(settings)$")
         Run("ms-settings:")

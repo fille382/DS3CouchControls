@@ -1,79 +1,114 @@
 # DS3 Couch Controls
 
-Use a DualShock 3 controller as a full desktop mouse + keyboard replacement, with built-in voice-to-text powered by a local Whisper AI model running on your GPU. No subscriptions, no cloud — everything runs locally.
+Use a DualShock 3 controller as a full desktop mouse and keyboard replacement. Navigate Windows, browse the web, dictate text with local AI speech-to-text, and control media — all from your couch.
 
 ## Features
 
-- **Mouse control** via left analog stick with radial deadzone, acceleration curve, sub-pixel accumulation, and sniper mode
-- **Smooth scrolling** via right analog stick (vertical + horizontal)
-- **Voice-to-text** — hold R1 to dictate, powered by [faster-whisper](https://github.com/SYSTRAN/faster-whisper) running locally on CUDA GPU
-- **Animated recording overlay** — GDI+ rendered pill-shaped indicator with reactive sound bars
-- **Auto-send** — automatically presses Enter after dictation completes (keyboard idle detection)
-- **Copy/Paste toggle** — Triangle alternates between Ctrl+C and Ctrl+V
-- **Modifier layer** — hold L1 to access secondary functions with on-screen HUD
-- **D-Pad navigation** — arrow keys with hold-to-repeat, debounced to prevent double-triggers
-- **Full XInput support** — works with DsHidMini in XInput mode over Bluetooth
+- **Mouse cursor** — Left stick with radial deadzone, acceleration curve, and sub-pixel precision
+- **Scrolling** — Right stick for smooth vertical and horizontal scrolling
+- **Click/Drag** — R2 (left click), L2 (right click), Cross (hold-to-drag)
+- **D-Pad navigation** — Arrow keys for navigating files, menus, and lists
+- **Voice-to-text** — Hold R1 to dictate using a local Whisper AI model (no cloud, no subscription)
+- **Voice commands** — L1+R1 for hands-free keyboard shortcuts ("copy", "paste", "enter", "undo", etc.)
+- **Media controls** — L1+D-Pad for next/prev track and volume
+- **Alt+Tab** — Select button opens the window switcher with D-Pad navigation
+- **Zoom lens** — L3 toggles a circular magnifier with sniper cursor mode
+- **Modifier layer** — L1 reveals an on-screen HUD showing all available shortcuts
+- **Recording overlay** — Animated sound wave visualization during voice input
 
 ## Requirements
 
-- **Windows 11**
-- **AutoHotkey v2.0+** — https://www.autohotkey.com/
-- **Python 3.10+** with CUDA support
-- **NVIDIA GPU** (for fast Whisper transcription)
-- **DsHidMini** — DS3 driver: https://github.com/nefarius/DsHidMini (set to XInput mode)
+- **Windows 10/11**
+- **DualShock 3 controller** with [DsHidMini](https://github.com/nefarius/DsHidMini) in XInput mode
+- **AutoHotkey v2** — [autohotkey.com](https://www.autohotkey.com/)
+- **Python 3.10+** with NVIDIA GPU for voice features
+- **Python packages:** `faster-whisper`, `sounddevice`, `numpy`
 
 ## Setup
 
-1. Install AutoHotkey v2 and Python 3.10+
+1. Install DsHidMini and pair your DS3 controller (USB or Bluetooth)
+2. Set HID device mode to **XInput** in DsHidMini Control
+3. Install Python dependencies:
+   ```
+   pip install faster-whisper sounddevice numpy
+   ```
+4. Run `DS3Mouse.ahk` — it auto-launches the Whisper server
 
-2. Install Python dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
-
-3. Make sure your DS3 is connected via DsHidMini in **XInput mode**
-
-4. Run the script:
-   ```
-   DS3Mouse.ahk
-   ```
-   The script will automatically launch the Whisper server and load the model (first run downloads ~3GB).
+The first launch downloads the Whisper model (~3GB for large-v3) which may take a few minutes.
 
 ## Controls
 
 ### Normal Mode
 
-| Button | Action |
-|--------|--------|
-| Left Stick | Move mouse cursor |
-| Right Stick | Scroll (vertical & horizontal) |
+| Input | Action |
+|-------|--------|
+| Left Stick | Move cursor |
+| Right Stick | Scroll |
 | R2 | Left click (hold to drag) |
 | L2 | Right click (hold to drag) |
-| Cross / A | Left click (hold to drag) |
-| Circle / B | Right click |
-| Triangle / Y | Copy / Paste (toggles) |
-| Square / X | Backspace (hold to repeat) |
+| Cross | Left click (hold to drag) |
+| Circle | Right click |
+| Square | Backspace (hold to repeat) |
+| Triangle | Copy / Paste toggle |
 | D-Pad | Arrow keys |
-| R1 (hold) | Voice dictate (Whisper) |
-| Start | Enter |
-| Select | Escape |
-| L3 | Toggle sniper mode |
-| R3 | Toggle rapid scroll |
-| PS / Guide | Pause / Resume |
+| R1 (hold) | Dictate with Whisper |
+| Start | Windows Start Menu |
+| Select | Alt+Tab window switcher |
+| L3 | Sniper mode + Zoom lens |
+| R3 | Rapid scroll toggle |
+| PS | Pause/Resume script |
 
-### L1 Modifier Layer (hold L1)
+### L1 Modifier Layer
 
-| Button | Action |
-|--------|--------|
-| Cross | Enter |
-| Circle | Escape |
-| Square | Select All + Delete |
-| Triangle | Tab |
-| D-Up | Page Up |
-| D-Down | Page Down |
-| D-Left | Home |
-| D-Right | End |
-| R1 | Middle click |
+| Input | Action |
+|-------|--------|
+| L1 + Cross | Enter |
+| L1 + Circle | Escape |
+| L1 + Square | Select All + Delete |
+| L1 + Triangle | Tab |
+| L1 + D-Up | Volume Up |
+| L1 + D-Down | Volume Down |
+| L1 + D-Left | Previous Track |
+| L1 + D-Right | Next Track |
+| L1 + R1 (hold) | Voice command mode |
+
+### Voice Commands
+
+Say these while holding L1+R1:
+
+| Command | Action |
+|---------|--------|
+| enter | Enter key |
+| escape / back | Escape key |
+| copy | Ctrl+C |
+| paste | Paste |
+| cut | Ctrl+X |
+| undo | Ctrl+Z |
+| redo | Ctrl+Y |
+| select all | Ctrl+A |
+| delete | Delete key |
+| tab | Tab key |
+| space | Space key |
+| save | Ctrl+S |
+| find / search | Ctrl+F |
+| close | Alt+F4 |
+| play / pause | Media play/pause |
+| next / skip | Next track |
+| previous | Previous track |
+| open browser | Default browser |
+| open explorer | File Explorer |
+| open spotify | Spotify |
+| open discord | Discord |
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `DS3Mouse.ahk` | Main controller script (AutoHotkey v2) |
+| `whisper_server.py` | Local Whisper speech-to-text server |
+| `media_control.py` | Spotify/media control helper |
+| `DS3Mouse.ico` | Custom tray icon |
+| `DS3Test.ahk` | Controller axis/button tester |
 
 ## Configuration
 
@@ -87,13 +122,13 @@ Edit the `Config` class at the top of `DS3Mouse.ahk` to tune:
 
 ## Architecture
 
-- **DS3Mouse.ahk** — Main AHK v2 script handling input polling, mouse/keyboard emulation, HUD overlay, and recording visualization
-- **whisper_server.py** — Python TCP server that records audio and transcribes via faster-whisper on GPU
-- Communication is via TCP on localhost:7492, with audio levels passed through a shared file for the animated overlay
+- **DS3Mouse.ahk** — AHK v2 script: XInput polling, mouse/keyboard emulation, HUD overlay, recording visualization, zoom lens
+- **whisper_server.py** — Python TCP server: records audio, transcribes via faster-whisper on GPU, auto-detects language
+- **media_control.py** — Python helper: controls Spotify via Windows COM automation
+- Communication via TCP on localhost:7492, audio levels via shared file for the animated overlay
 
-## Notes
+## Known Limitations
 
-- The Whisper model (`large-v3`) is downloaded automatically on first run (~3GB)
-- Bluetooth headset microphones will temporarily switch to HFP mode (lower audio quality) during recording — this is a Bluetooth limitation, not a bug. Consider using a USB microphone for dictation to avoid this.
-- The script uses XInput directly via DLL calls for minimal latency (~5ms polling)
-- GDI+ overlay is optimized with pre-cached brushes, paths, and a sin lookup table to avoid impacting input responsiveness
+- DsHidMini XInput mode sends phantom keyboard events for some buttons — `CleanSend()` workarounds are included
+- Bluetooth headset audio drops to mono 16kHz during recording (Bluetooth HFP limitation)
+- Whisper large-v3 requires ~3GB VRAM
