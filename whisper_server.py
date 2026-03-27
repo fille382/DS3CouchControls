@@ -77,6 +77,9 @@ audio_chunks = []
 record_lock = threading.Lock()
 current_rms = 0.0  # Live audio level for visualization
 audio_stream = None  # Opened on-demand, closed after recording
+# Language memory — tracks last N detected languages to auto-select
+_language_history = []
+_LANGUAGE_MEMORY = 3  # How many recent detections to remember
 
 
 def load_model():
@@ -147,8 +150,8 @@ def start_recording():
     print("Recording started (mic stream opened)...")
 
 
-def stop_and_transcribe():
-    """Stop recording, close mic stream, transcribe."""
+def stop_and_transcribe(force_language=None):
+    """Stop recording, close mic stream, transcribe. force_language overrides auto-detect."""
     global recording, audio_stream
     with record_lock:
         recording = False
@@ -186,21 +189,47 @@ def stop_and_transcribe():
         # Normalize to ~80% volume
         audio_data = audio_data * (0.8 / peak)
 
+    # Determine language hint
+    global _language_history
+    if force_language:
+        language_hint = force_language
+    else:
+        language_hint = None
+        if len(_language_history) >= 2:
+            from collections import Counter
+            counts = Counter(_language_history[-_LANGUAGE_MEMORY:])
+            most_common, count = counts.most_common(1)[0]
+            if count >= 2:
+                language_hint = most_common
+
     # Transcribe
-    print("Transcribing...")
-    segments, info = model.transcribe(
-        audio_data,
+    transcribe_kwargs = dict(
         beam_size=5,
         vad_filter=True,
         vad_parameters=dict(
-            threshold=0.3,              # Lower threshold (default 0.5)
+            threshold=0.3,
             min_silence_duration_ms=500,
             speech_pad_ms=300,
         ),
     )
 
+    if language_hint:
+        transcribe_kwargs["language"] = language_hint
+        print(f"Transcribing (language: {language_hint}{' [forced]' if force_language else ''})...")
+    else:
+        print("Transcribing (auto-detect language)...")
+
+    segments, info = model.transcribe(audio_data, **transcribe_kwargs)
     text = " ".join(seg.text.strip() for seg in segments).strip()
-    print(f"Language: {info.language} ({info.language_probability:.0%})")
+
+    # Update language history (skip for forced language — don't pollute history)
+    detected_lang = info.language
+    if not force_language:
+        _language_history.append(detected_lang)
+        if len(_language_history) > _LANGUAGE_MEMORY * 2:
+            _language_history = _language_history[-_LANGUAGE_MEMORY:]
+
+    print(f"Language: {detected_lang} ({info.language_probability:.0%}) | History: {_language_history}")
     print(f"Transcribed: {text}")
     return text
 
@@ -227,8 +256,10 @@ def handle_client(conn, addr):
                     start_recording()
                     conn.sendall(b"OK\n")
 
-                elif cmd == "STOP":
-                    text = stop_and_transcribe()
+                elif cmd == "STOP" or cmd == "STOP_EN":
+                    # STOP_EN forces English (for voice commands)
+                    force_lang = "en" if cmd == "STOP_EN" else None
+                    text = stop_and_transcribe(force_language=force_lang)
                     # Write result to file for non-blocking AHK pickup
                     result_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whisper_result.txt")
                     with open(result_path, "w", encoding="utf-8") as f:

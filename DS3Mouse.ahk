@@ -21,8 +21,8 @@ Persistent
 ;    D-Pad Left/Right ...... Browser back/fwd (Home/End with L1)
 ;    L3 .................... Toggle sniper mode
 ;    R3 .................... Toggle rapid scroll
-;    Start ................. Enter
-;    Back / Select ......... Escape
+;    Start ................. Windows Start menu
+;    Back / Select ......... Alt+Tab (D-pad to navigate, Cross=confirm, Circle=cancel)
 ;    Guide / PS ............ Toggle mouse on/off
 ;
 ; ============================================================
@@ -68,11 +68,12 @@ class State {
     static MoveAccumY := 0.0
     static ScrollAccumV := 0.0
     static ScrollAccumH := 0.0
-    static DpadScrollTick := 0
+    static DpadActive := false
+    static DpadDirection := 0
+    static DpadHeldMs := 0
+    static DpadFired := false
     static DpadRepeating := false
-    static DpadReleaseCount := 0
-    static DpadConfirmedRelease := true
-    static LastDpad := 0
+    static DpadReleaseTime := 0
     static PrevButtons := 0
     static PrevL3 := false
     static PrevR3 := false
@@ -81,87 +82,182 @@ class State {
     static CrossDown := false
     static R1Dictating := false
     static WaitingForTranscription := false
+    static R1IsVoiceCommand := false
     static SquareHeld := false
     static SquareRepeatTick := 0
     static TriangleNextPaste := false  ; false = next press copies, true = next press pastes
+    static AltTabActive := false       ; Alt+Tab switcher is open
+    static AltTabJustClosed := false   ; Block Cross click after Alt+Tab confirm
 }
 
 ; ============================================================
-;  L1 overlay HUD
+;  L1 overlay HUD — two pre-built windows, instant show/hide
 ; ============================================================
 class HUD {
-    static gui := 0
+    static guiNormal := 0
+    static guiVoice := 0
     static visible := false
-    static xPos := 0
-    static yPos := 0
+    static mode := "normal"
+    static normalPos := {x: 0, y: 0}
+    static voicePos := {x: 0, y: 0}
+
+    static _BuildGui(leftText, rightText) {
+        g := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
+        g.BackColor := "0x1a1a2e"
+        g.MarginX := 10
+        g.MarginY := 8
+        g.SetFont("s9", "Consolas")
+        g.AddText("cWhite Section", leftText)
+        g.AddText("cWhite ys", rightText)
+        g.Show("NoActivate x-9999 y-9999")
+        WinSetTransparent(200, g.Hwnd)
+        WinGetPos(,, &w, &h, g.Hwnd)
+        g.Hide()
+        return {gui: g, w: w, h: h}
+    }
 
     static Init() {
-        HUD.gui := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
-        HUD.gui.BackColor := "0x1a1a2e"
-        HUD.gui.MarginX := 10
-        HUD.gui.MarginY := 8
-        HUD.gui.SetFont("s9", "Consolas")
+        ; Normal HUD
+        nLeft := ""
+        nLeft .= " L1 + MODIFIER LAYER`n"
+        nLeft .= " ────────────────────────`n"
+        nLeft .= " Cross ........ Enter`n"
+        nLeft .= " Circle ....... Escape`n"
+        nLeft .= " Square ....... Clear All`n"
+        nLeft .= " Triangle ..... Tab`n"
+        nLeft .= " ────────────────────────`n"
+        nLeft .= " D-Up ......... Volume Up`n"
+        nLeft .= " D-Down ....... Volume Down`n"
+        nLeft .= " D-Left ....... Prev Track`n"
+        nLeft .= " D-Right ...... Next Track`n"
+        nLeft .= " R1 (hold) .... Voice Command"
 
-        modText := ""
-        modText .= " L1 + MODIFIER LAYER`n"
-        modText .= " ────────────────────────`n"
-        modText .= " Cross ........ Enter`n"
-        modText .= " Circle ....... Escape`n"
-        modText .= " Square ....... Clear All`n"
-        modText .= " Triangle ..... Tab`n"
-        modText .= " ────────────────────────`n"
-        modText .= " D-Up ......... Page Up`n"
-        modText .= " D-Down ....... Page Down`n"
-        modText .= " D-Left ....... Home`n"
-        modText .= " D-Right ...... End`n"
-        modText .= " R1 ........... Middle Click"
+        nRight := ""
+        nRight .= " NORMAL CONTROLS`n"
+        nRight .= " ────────────────────────`n"
+        nRight .= " L-Stick ...... Mouse`n"
+        nRight .= " R-Stick ...... Scroll`n"
+        nRight .= " L2 ........... Right Click`n"
+        nRight .= " R2 ........... Left Click`n"
+        nRight .= " D-Pad ........ Arrow Keys`n"
+        nRight .= " ────────────────────────`n"
+        nRight .= " Cross ........ Left Click`n"
+        nRight .= " Circle ....... Right Click`n"
+        nRight .= " Square ....... Backspace`n"
+        nRight .= " Triangle ..... Copy/Paste`n"
+        nRight .= " R1 (hold) .... Dictate`n"
+        nRight .= " Start ........ Start Menu`n"
+        nRight .= " Select ....... Alt+Tab`n"
+        nRight .= " ────────────────────────`n"
+        nRight .= " L3 ........... Sniper Mode`n"
+        nRight .= " R3 ........... Rapid Scroll`n"
+        nRight .= " PS ........... Pause/Resume"
 
-        HUD.gui.AddText("cWhite Section", modText)
-
-        normText := ""
-        normText .= " NORMAL CONTROLS`n"
-        normText .= " ────────────────────────`n"
-        normText .= " L-Stick ...... Mouse`n"
-        normText .= " R-Stick ...... Scroll`n"
-        normText .= " L2 ........... Right Click`n"
-        normText .= " R2 ........... Left Click`n"
-        normText .= " D-Pad ........ Arrow Keys`n"
-        normText .= " ────────────────────────`n"
-        normText .= " Cross ........ Left Click`n"
-        normText .= " Circle ....... Right Click`n"
-        normText .= " Square ....... Backspace`n"
-        normText .= " Triangle ..... Copy/Paste`n"
-        normText .= " R1 (hold) .... Dictate`n"
-        normText .= " Start ........ Enter`n"
-        normText .= " Select ....... Escape`n"
-        normText .= " ────────────────────────`n"
-        normText .= " L3 ........... Sniper Mode`n"
-        normText .= " R3 ........... Rapid Scroll`n"
-        normText .= " PS ........... Pause/Resume"
-
-        HUD.gui.AddText("cWhite ys", normText)
-
-        HUD.gui.Show("NoActivate x-9999 y-9999")
-        WinSetTransparent(200, HUD.gui.Hwnd)
-        WinGetPos(,, &w, &h, HUD.gui.Hwnd)
+        n := HUD._BuildGui(nLeft, nRight)
+        HUD.guiNormal := n.gui
         MonitorGetWorkArea(, &mL, &mT, &mR, &mB)
-        HUD.xPos := mL + 20
-        HUD.yPos := mB - h - 20
-        HUD.gui.Hide()
+        HUD.normalPos := {x: mL + 20, y: mB - n.h - 20}
+
+        ; Voice command HUD
+        vLeft := ""
+        vLeft .= " VOICE COMMANDS (L1+R1)`n"
+        vLeft .= " ─── EDITING ───────────────`n"
+        vLeft .= " copy / paste / cut`n"
+        vLeft .= " undo / redo`n"
+        vLeft .= " select all / save / find`n"
+        vLeft .= " ─── KEYS ─────────────────`n"
+        vLeft .= " enter / escape / space`n"
+        vLeft .= " backspace / delete / tab`n"
+        vLeft .= " shift tab / home / end`n"
+        vLeft .= " page up / page down`n"
+        vLeft .= " up / down / left / right`n"
+        vLeft .= " ─── MEDIA ────────────────`n"
+        vLeft .= " play / pause / next`n"
+        vLeft .= " previous / mute`n"
+        vLeft .= " volume up / volume down"
+
+        vRight := ""
+        vRight .= " `n"
+        vRight .= " ─── BROWSER ──────────────`n"
+        vRight .= " new tab / close tab`n"
+        vRight .= " reopen tab / next tab`n"
+        vRight .= " previous tab / refresh`n"
+        vRight .= " fullscreen / zoom in / out`n"
+        vRight .= " ─── WINDOWS ──────────────`n"
+        vRight .= " minimize / maximize`n"
+        vRight .= " close window / desktop`n"
+        vRight .= " screenshot / snip`n"
+        vRight .= " lock / task manager`n"
+        vRight .= " snap left / snap right`n"
+        vRight .= " ─── APPS ─────────────────`n"
+        vRight .= " spotify / browser`n"
+        vRight .= " discord / explorer`n"
+        vRight .= " settings / notepad / calc"
+
+        v := HUD._BuildGui(vLeft, vRight)
+        HUD.guiVoice := v.gui
+        HUD.voicePos := {x: mL + 20, y: mB - v.h - 20}
+    }
+
+    static SetMode(newMode) {
+        if (HUD.mode = newMode)
+            return
+        oldMode := HUD.mode
+        HUD.mode := newMode
+        if HUD.visible {
+            ; Hide old, show new — instant swap
+            if (oldMode = "normal")
+                HUD.guiNormal.Hide()
+            else
+                HUD.guiVoice.Hide()
+            if (newMode = "voice")
+                HUD.guiVoice.Show("NoActivate x" HUD.voicePos.x " y" HUD.voicePos.y)
+            else
+                HUD.guiNormal.Show("NoActivate x" HUD.normalPos.x " y" HUD.normalPos.y)
+        }
     }
 
     static Show() {
         if HUD.visible
             return
-        HUD.gui.Show("NoActivate x" HUD.xPos " y" HUD.yPos)
+        if (HUD.mode = "voice")
+            HUD.guiVoice.Show("NoActivate x" HUD.voicePos.x " y" HUD.voicePos.y)
+        else
+            HUD.guiNormal.Show("NoActivate x" HUD.normalPos.x " y" HUD.normalPos.y)
         HUD.visible := true
     }
 
     static Hide() {
         if !HUD.visible
             return
-        HUD.gui.Hide()
+        HUD.guiNormal.Hide()
+        HUD.guiVoice.Hide()
         HUD.visible := false
+    }
+}
+
+
+; ============================================================
+;  Clipboard Toast — simple ToolTip showing copied text
+; ============================================================
+class ClipboardToast {
+    static Show() {
+        clipText := A_Clipboard
+        if (clipText = "")
+            clipText := "(empty)"
+        if (StrLen(clipText) > 100)
+            clipText := SubStr(clipText, 1, 97) "..."
+        clipText := StrReplace(clipText, "`r`n", " ")
+        clipText := StrReplace(clipText, "`n", " ")
+        ToolTip("Copied: " clipText)
+        SetTimer(() => ToolTip(), -4000)
+    }
+
+    static Hide() {
+        ToolTip()
+    }
+
+    static Init() {
     }
 }
 
@@ -753,7 +849,11 @@ if !testState.connected {
     ExitApp()
 }
 
+; NOTE: Run block_controller_keys.py separately to block DsHidMini
+; phantom keyboard events (VK codes 0xC8, 0xCB-0xCE etc.)
+
 HUD.Init()
+ClipboardToast.Init()
 RecordingOverlay.Init()
 
 try TraySetIcon(A_ScriptDir "\DS3Mouse.ico")
@@ -829,17 +929,14 @@ MainLoop() {
     HandleTriggers(gp.lt, gp.rt)
 
     ; ── D-PAD (only real d-pad presses, ignore if left stick is active) ──
-    ; XInput leaks stick input into d-pad bits — suppress d-pad when ANY stick movement detected
-    ; Use a very low threshold: if the stick has moved at all from center, block d-pad
+    ; XInput leaks stick input into d-pad bits — suppress d-pad when stick moves
     stickMagSq := gp.lx * gp.lx + gp.ly * gp.ly
-    if (stickMagSq < 1000000)  ; ~1000 magnitude — barely touching the stick
+    if (stickMagSq < 1000000)  ; ~1000 magnitude — barely touching
         HandleDPad(gp.buttons, l1Held)
     else {
-        ; Mask out d-pad bits entirely when stick is active
-        State.LastDpad := 0
+        ; Kill any active d-pad state when stick is moving
+        State.DpadActive := false
         State.DpadRepeating := false
-        State.DpadReleaseCount := 0
-        State.DpadConfirmedRelease := false
     }
 
     ; ── Face buttons + shoulders ──
@@ -857,6 +954,13 @@ BtnPressed(current, mask) {
 
 BtnHeld(current, mask) {
     return (current & mask) != 0
+}
+
+; Send a key while releasing phantom Ctrl from DsHidMini
+; DsHidMini XInput sends vkC8 as LControl when L1 is held,
+; which corrupts all Send() calls. This releases Ctrl first.
+CleanSend(keys) {
+    Send("{LCtrl Up}" keys)
 }
 
 ; ============================================================
@@ -991,67 +1095,107 @@ HandleTriggers(lt, rt) {
 }
 
 ; ============================================================
-;  D-Pad
+;  D-Pad — tick-based with cooldown to prevent double-triggers
 ; ============================================================
 HandleDPad(buttons, l1Held) {
     dpad := buttons & 0x000F
+    now := A_TickCount
 
-    ; Track confirmed release — d-pad must be released for 6+ consecutive
-    ; polls (~30ms) before a new press is accepted. This prevents false
-    ; double-triggers from noisy XInput reports.
+    ; --- Released ---
     if (dpad = 0) {
-        State.DpadReleaseCount += 1
-        if (State.DpadReleaseCount >= 6) {
-            State.DpadConfirmedRelease := true
-        }
-        State.LastDpad := 0
-        State.DpadRepeating := false
-        State.DpadScrollTick := 0
-        return
-    }
-
-    ; New press — only accept if release was confirmed
-    if (dpad != State.LastDpad) {
-        if (State.DpadConfirmedRelease) {
-            State.LastDpad := dpad
-            State.DpadScrollTick := 0
-            State.DpadRepeating := false
-            State.DpadReleaseCount := 0
-            State.DpadConfirmedRelease := false
-            DPadAction(dpad, l1Held)
+        if (State.DpadActive) {
+            ; Mark release time for cooldown
+            State.DpadReleaseTime := now
+            State.DpadActive := false
+            State.DpadHeldMs := 0
         }
         return
     }
 
-    ; Same direction held — handle repeat
-    State.DpadScrollTick += Config.PollRate
-    threshold := State.DpadRepeating ? Config.DpadRepeatInterval : Config.DpadRepeatDelay
-    if (State.DpadScrollTick >= threshold) {
-        State.DpadScrollTick := 0
+    ; --- Pressed ---
+    ; Determine the primary direction (pick one bit only — prevents diagonal noise)
+    primary := 0
+    if (dpad & XINPUT.DPAD_UP)
+        primary := XINPUT.DPAD_UP
+    else if (dpad & XINPUT.DPAD_DOWN)
+        primary := XINPUT.DPAD_DOWN
+    else if (dpad & XINPUT.DPAD_LEFT)
+        primary := XINPUT.DPAD_LEFT
+    else if (dpad & XINPUT.DPAD_RIGHT)
+        primary := XINPUT.DPAD_RIGHT
+
+    if (primary = 0)
+        return
+
+    if (!State.DpadActive) {
+        ; New press — enforce cooldown from last release (prevents double-triggers)
+        if (now - State.DpadReleaseTime < 80)
+            return  ; Too soon after release, ignore
+
+        State.DpadActive := true
+        State.DpadDirection := primary
+        State.DpadHeldMs := 0
+        State.DpadFired := false
+
+        ; Fire immediately on press
+        DPadAction(primary, l1Held)
+        State.DpadFired := true
+        return
+    }
+
+    ; Held — same direction only (ignore direction changes while held)
+    if (primary != State.DpadDirection)
+        return
+
+    ; Accumulate hold time for repeat
+    State.DpadHeldMs += Config.PollRate
+    threshold := State.DpadFired ? Config.DpadRepeatInterval : Config.DpadRepeatDelay
+    ; First repeat uses delay, subsequent repeats use interval
+    if (!State.DpadRepeating && State.DpadHeldMs >= Config.DpadRepeatDelay) {
         State.DpadRepeating := true
-        DPadAction(dpad, l1Held)
+        State.DpadHeldMs := 0
+        DPadAction(primary, l1Held)
+    } else if (State.DpadRepeating && State.DpadHeldMs >= Config.DpadRepeatInterval) {
+        State.DpadHeldMs := 0
+        DPadAction(primary, l1Held)
     }
 }
 
 DPadAction(dpad, l1Held) {
+    ; If Alt+Tab is active, navigate the switcher and reset the confirm timer
+    ; Must keep Alt held — use {Blind} to avoid Send releasing modifiers
+    if State.AltTabActive {
+        if (dpad & XINPUT.DPAD_LEFT) || (dpad & XINPUT.DPAD_UP)
+            Send("{Blind}+{Tab}")  ; Shift+Tab = previous window (Alt stays held)
+        else if (dpad & XINPUT.DPAD_RIGHT) || (dpad & XINPUT.DPAD_DOWN)
+            Send("{Blind}{Tab}")   ; Tab = next window (Alt stays held)
+        ; Reset auto-confirm timer on each navigation
+        SetTimer(AltTabConfirm, -5000)
+        return
+    }
+
     if l1Held {
+        mediaScript := A_ScriptDir "\media_control.py"
         if (dpad & XINPUT.DPAD_UP)
-            Send("{PgUp}")
+            CleanSend("{Volume_Up}")
         if (dpad & XINPUT.DPAD_DOWN)
-            Send("{PgDn}")
+            CleanSend("{Volume_Down}")
         if (dpad & XINPUT.DPAD_LEFT)
-            Send("{Home}")
+            Run('pythonw "' mediaScript '" prev',, "Hide")
         if (dpad & XINPUT.DPAD_RIGHT)
-            Send("{End}")
+            Run('pythonw "' mediaScript '" next',, "Hide")
+        return
     } else {
-        if (dpad & XINPUT.DPAD_UP)
-            Send("{Up}")
-        if (dpad & XINPUT.DPAD_DOWN)
-            Send("{Down}")
-        if (dpad & XINPUT.DPAD_LEFT)
-            Send("{Left}")
-        if (dpad & XINPUT.DPAD_RIGHT)
-            Send("{Right}")
+        {
+            if (dpad & XINPUT.DPAD_UP)
+                Send("{Up}")
+            if (dpad & XINPUT.DPAD_DOWN)
+                Send("{Down}")
+            if (dpad & XINPUT.DPAD_LEFT)
+                Send("{Left}")
+            if (dpad & XINPUT.DPAD_RIGHT)
+                Send("{Right}")
+        }
     }
 }
 
@@ -1059,11 +1203,36 @@ DPadAction(dpad, l1Held) {
 ;  Face buttons + shoulders
 ; ============================================================
 HandleButtons(buttons, l1Held) {
+    ; If Alt+Tab is active, Cross confirms and Circle cancels
+    if State.AltTabActive {
+        if BtnPressed(buttons, XINPUT.A) {
+            ; Confirm — release Alt to select the focused window
+            SetTimer(AltTabConfirm, 0)  ; Cancel auto-timer
+            Send("{Alt Up}")
+            State.AltTabActive := false
+            State.AltTabJustClosed := true  ; Block Cross click until released
+            return
+        }
+        if BtnPressed(buttons, XINPUT.B) {
+            ; Cancel — press Escape then release Alt
+            SetTimer(AltTabConfirm, 0)
+            Send("{Escape}{Alt Up}")
+            State.AltTabActive := false
+            return
+        }
+        return  ; Block other buttons while Alt+Tab is open
+    }
+
     ; A / Cross — hold for drag, or Enter with L1
     crossNow := BtnHeld(buttons, XINPUT.A)
-    if l1Held {
+    ; Block Cross until released after Alt+Tab confirm
+    if (State.AltTabJustClosed) {
+        if !crossNow
+            State.AltTabJustClosed := false
+        ; Skip all Cross logic while button still held
+    } else if l1Held {
         if BtnPressed(buttons, XINPUT.A)
-            Send("{Enter}")
+            CleanSend("{Enter}")
     } else {
         if (crossNow && !State.CrossDown) {
             Click("Down")
@@ -1077,7 +1246,7 @@ HandleButtons(buttons, l1Held) {
     ; B / Circle
     if BtnPressed(buttons, XINPUT.B) {
         if l1Held
-            Send("{Escape}")
+            CleanSend("{Escape}")
         else
             Click("Right")
     }
@@ -1086,7 +1255,7 @@ HandleButtons(buttons, l1Held) {
     sqNow := BtnHeld(buttons, XINPUT.X)
     if l1Held {
         if BtnPressed(buttons, XINPUT.X)
-            Send("^a{Delete}")
+            CleanSend("^a{Delete}")
     } else {
         if (sqNow && !State.SquareHeld) {
             Send("{Backspace}")
@@ -1107,56 +1276,90 @@ HandleButtons(buttons, l1Held) {
     ; Y / Triangle — toggles between Copy and Paste (Tab with L1)
     if BtnPressed(buttons, XINPUT.Y) {
         if l1Held {
-            Send("{Tab}")
+            CleanSend("{Tab}")
         } else {
             if State.TriangleNextPaste {
                 Send("^v")
                 State.TriangleNextPaste := false
+                ToolTip("Pasted")
+                SetTimer(() => ToolTip(), -1500)
             } else {
                 Send("^c")
+                Sleep(50)
                 State.TriangleNextPaste := true
+                ToolTip("Copied")
+                SetTimer(() => ToolTip(), -1500)
             }
         }
     }
 
-    ; R1 — hold to dictate (local Whisper), or middle click with L1
+    ; R1 — hold to dictate (local Whisper)
+    ; Normal R1 = dictation (types text + Enter)
+    ; L1 + R1 = voice command (executes keyboard shortcut)
     r1Now := BtnHeld(buttons, XINPUT.RIGHT_SHOULDER)
-    if l1Held {
-        if BtnPressed(buttons, XINPUT.RIGHT_SHOULDER)
-            Click("Middle")
-    } else {
-        if (r1Now && !State.R1Dictating && !State.WaitingForTranscription) {
-            ; Delete old result file
-            resultFile := A_ScriptDir "\whisper_result.txt"
-            if FileExist(resultFile)
-                FileDelete(resultFile)
-            Whisper.StartRecording()
-            State.R1Dictating := true
-            RecordingOverlay.Show()
-        } else if (!r1Now && State.R1Dictating) {
-            State.R1Dictating := false
-            RecordingOverlay.ShowTranscribing()
-            ; Send STOP (non-blocking, don't wait for response)
-            Whisper._Send("STOP`n")
-            ; Start polling for result file
-            State.WaitingForTranscription := true
-            SetTimer(PollTranscriptionResult, 100)
+    if (r1Now && !State.R1Dictating && !State.WaitingForTranscription) {
+        ; Delete old result file
+        resultFile := A_ScriptDir "\whisper_result.txt"
+        if FileExist(resultFile)
+            FileDelete(resultFile)
+        Whisper.StartRecording()
+        State.R1Dictating := true
+        State.R1IsVoiceCommand := l1Held  ; Remember if L1 was held at start
+        RecordingOverlay.Show()
+        if l1Held
+            HUD.SetMode("voice")
+    } else if (!r1Now && State.R1Dictating) {
+        State.R1Dictating := false
+        HUD.SetMode("normal")
+        RecordingOverlay.ShowTranscribing()
+        ; Voice command mode forces English transcription
+        Whisper._Send(State.R1IsVoiceCommand ? "STOP_EN`n" : "STOP`n")
+        State.WaitingForTranscription := true
+        SetTimer(PollTranscriptionResult, 100)
+    }
+
+    ; Start → Windows Start menu
+    if BtnPressed(buttons, XINPUT.START)
+        Send("{LWin}")
+
+    ; Back/Select → Alt+Tab window switcher
+    if BtnPressed(buttons, XINPUT.BACK) {
+        if State.AltTabActive {
+            ; Already open — tab to next window and reset timer
+            Send("{Blind}{Tab}")
+            SetTimer(AltTabConfirm, -5000)
+        } else {
+            ; Open Alt+Tab switcher (hold Alt down)
+            Send("{Alt Down}{Tab}")
+            State.AltTabActive := true
+            SetTimer(AltTabConfirm, -5000)
         }
     }
 
-    ; Start → Enter
-    if BtnPressed(buttons, XINPUT.START)
-        Send("{Enter}")
-
-    ; Back/Select → Escape
-    if BtnPressed(buttons, XINPUT.BACK)
-        Send("{Escape}")
-
-    ; L3 → toggle sniper
+    ; L3 → toggle sniper + Windows Magnifier zoom
     l3Now := BtnHeld(buttons, XINPUT.LEFT_THUMB)
     if (l3Now && !State.PrevL3) {
         State.Sniper := !State.Sniper
-        ToolTip(State.Sniper ? "Sniper mode ON" : "Sniper mode OFF")
+        ; Block d-pad briefly so stick wiggle during click doesn't send arrows
+        State.DpadActive := false
+        State.DpadReleaseTime := A_TickCount + 200  ; 200ms cooldown
+        if State.Sniper {
+            Sleep(50)
+            Send("{LWin Down}")
+            Sleep(100)
+            Send("{=}")
+            Sleep(100)
+            Send("{LWin Up}")
+            ToolTip("Sniper + Zoom ON")
+        } else {
+            Sleep(50)
+            Send("{LWin Down}")
+            Sleep(100)
+            Send("{-}")
+            Sleep(100)
+            Send("{LWin Up}")
+            ToolTip("Sniper + Zoom OFF")
+        }
         SetTimer(() => ToolTip(), -1500)
     }
     State.PrevL3 := l3Now
@@ -1169,6 +1372,16 @@ HandleButtons(buttons, l1Held) {
         SetTimer(() => ToolTip(), -1500)
     }
     State.PrevR3 := r3Now
+}
+
+; ============================================================
+;  Alt+Tab confirm — releases Alt to select the focused window
+; ============================================================
+AltTabConfirm() {
+    if !State.AltTabActive
+        return
+    Send("{Alt Up}")
+    State.AltTabActive := false
 }
 
 ; ============================================================
@@ -1202,9 +1415,159 @@ PollTranscriptionResult() {
         return
     }
 
-    ; Type the transcribed text
-    SendText(text)
+    ; Voice command mode — match text to keyboard commands
+    if State.R1IsVoiceCommand {
+        ExecuteVoiceCommand(text)
+        return
+    }
 
-    ; Send Enter after delay
+    ; Normal dictation — type the text and send Enter
+    SendText(text)
     SetTimer(() => Send("{Enter}"), -Config.DictateEnterDelay)
+}
+
+; ============================================================
+;  Voice Commands (L1 + R1) — keyboard shortcuts by voice
+; ============================================================
+ExecuteVoiceCommand(text) {
+    ; Normalize: lowercase, trim, remove punctuation
+    cmd := Trim(StrLower(text))
+    cmd := RegExReplace(cmd, "[.,!?;:\x27\x22\-]", "")
+    cmd := RegExReplace(cmd, "\s+", " ")
+
+    ; Match against known commands
+    matched := true
+    if RegExMatch(cmd, "^(enter|confirm|send|submit)$")
+        Send("{Enter}")
+    else if RegExMatch(cmd, "^(escape|cancel|close|exit|esc)$")
+        Send("{Escape}")
+    else if RegExMatch(cmd, "^(copy)$")
+        Send("^c")
+    else if RegExMatch(cmd, "^(paste)$")
+        Send("^v")
+    else if RegExMatch(cmd, "^(cut)$")
+        Send("^x")
+    else if RegExMatch(cmd, "^(undo)$")
+        Send("^z")
+    else if RegExMatch(cmd, "^(redo)$")
+        Send("^y")
+    else if RegExMatch(cmd, "^(select all|select everything)$")
+        Send("^a")
+    else if RegExMatch(cmd, "^(backspace|delete that|erase)$")
+        Send("{Backspace}")
+    else if RegExMatch(cmd, "^(delete)$")
+        Send("{Delete}")
+    else if RegExMatch(cmd, "^(space|spacebar)$")
+        Send("{Space}")
+    else if RegExMatch(cmd, "^(tab|next field)$")
+        Send("{Tab}")
+    else if RegExMatch(cmd, "^(shift tab|previous field)$")
+        Send("+{Tab}")
+    else if RegExMatch(cmd, "^(home)$")
+        Send("{Home}")
+    else if RegExMatch(cmd, "^(end)$")
+        Send("{End}")
+    else if RegExMatch(cmd, "^(page up)$")
+        Send("{PgUp}")
+    else if RegExMatch(cmd, "^(page down)$")
+        Send("{PgDn}")
+    else if RegExMatch(cmd, "^(up|arrow up)$")
+        Send("{Up}")
+    else if RegExMatch(cmd, "^(down|arrow down)$")
+        Send("{Down}")
+    else if RegExMatch(cmd, "^(left|arrow left)$")
+        Send("{Left}")
+    else if RegExMatch(cmd, "^(right|arrow right)$")
+        Send("{Right}")
+    else if RegExMatch(cmd, "^(save)$")
+        Send("^s")
+    else if RegExMatch(cmd, "^(find|search)$")
+        Send("^f")
+    else if RegExMatch(cmd, "^(new tab)$")
+        Send("^t")
+    else if RegExMatch(cmd, "^(close tab)$")
+        Send("^w")
+    else if RegExMatch(cmd, "^(reopen tab|restore tab)$")
+        Send("^+t")
+    else if RegExMatch(cmd, "^(next tab)$")
+        Send("^{Tab}")
+    else if RegExMatch(cmd, "^(previous tab)$")
+        Send("^+{Tab}")
+    else if RegExMatch(cmd, "^(refresh|reload)$")
+        Send("{F5}")
+    else if RegExMatch(cmd, "^(full ?screen)$")
+        Send("{F11}")
+    else if RegExMatch(cmd, "^(minimize)$")
+        WinMinimize("A")
+    else if RegExMatch(cmd, "^(maximize)$")
+        WinMaximize("A")
+    else if RegExMatch(cmd, "^(close window|alt f4)$")
+        Send("!{F4}")
+    else if RegExMatch(cmd, "^(screenshot|print screen)$")
+        Send("{PrintScreen}")
+    else if RegExMatch(cmd, "^(snip|snipping)$")
+        Send("#+s")
+    else if RegExMatch(cmd, "^(lock|lock screen)$")
+        Send("#l")
+    else if RegExMatch(cmd, "^(desktop|show desktop)$")
+        Send("#d")
+    else if RegExMatch(cmd, "^(task manager)$")
+        Send("^+{Escape}")
+    ; App launchers
+    else if RegExMatch(cmd, "^(open |launch |start )?(spotify)$")
+        Run("spotify:")
+    else if RegExMatch(cmd, "^(open |launch |start )?(chrome|brave|browser)$")
+        Run("https://")
+    else if RegExMatch(cmd, "^(open |launch |start )?(discord)$")
+        Run("discord:")
+    else if RegExMatch(cmd, "^(open |launch |start )?(explorer|file ?manager|files)$")
+        Run("explorer.exe")
+    ; Media controls (Alt+F-keys — works globally with Spotify etc.)
+    else if RegExMatch(cmd, "^(play|pause|paus|play pause|spela|pausa)$")
+        Run('pythonw "' A_ScriptDir '\media_control.py" play',, "Hide")
+    else if RegExMatch(cmd, "^(next|next track|skip|nästa|nästa låt)$")
+        Run('pythonw "' A_ScriptDir '\media_control.py" next',, "Hide")
+    else if RegExMatch(cmd, "^(previous|previous track|go back|förra|förra låten|tillbaka)$")
+        Run('pythonw "' A_ScriptDir '\media_control.py" prev',, "Hide")
+    else if RegExMatch(cmd, "^(mute|unmute)$")
+        Send("{Volume_Mute}")
+    else if RegExMatch(cmd, "^(volume up|louder)$")
+        Send("{Volume_Up 5}")
+    else if RegExMatch(cmd, "^(volume down|quieter|softer)$")
+        Send("{Volume_Down 5}")
+    ; Browser zoom
+    else if RegExMatch(cmd, "^(zoom in)$")
+        Send("^{=}")
+    else if RegExMatch(cmd, "^(zoom out)$")
+        Send("^{-}")
+    else if RegExMatch(cmd, "^(zoom reset|reset zoom)$")
+        Send("^0")
+    ; Window snapping
+    else if RegExMatch(cmd, "^(snap left|left half)$")
+        Send("#{Left}")
+    else if RegExMatch(cmd, "^(snap right|right half)$")
+        Send("#{Right}")
+    else if RegExMatch(cmd, "^(snap up|top half)$")
+        Send("#{Up}")
+    else if RegExMatch(cmd, "^(snap down|bottom half)$")
+        Send("#{Down}")
+    ; More app launchers
+    else if RegExMatch(cmd, "^(open |launch |start )?(settings)$")
+        Run("ms-settings:")
+    else if RegExMatch(cmd, "^(open |launch |start )?(notepad|text editor)$")
+        Run("notepad.exe")
+    else if RegExMatch(cmd, "^(open |launch |start )?(calculator|calc)$")
+        Run("calc.exe")
+    else if RegExMatch(cmd, "^(open |launch |start )?(terminal|command prompt|cmd)$")
+        Run("wt.exe")
+    else {
+        matched := false
+        ToolTip('Unknown: "' text '"')
+        SetTimer(() => ToolTip(), -2500)
+    }
+
+    if matched {
+        ToolTip("CMD: " text)
+        SetTimer(() => ToolTip(), -1500)
+    }
 }
