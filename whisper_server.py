@@ -219,8 +219,23 @@ def stop_and_transcribe(force_language=None):
     else:
         print("Transcribing (auto-detect language)...")
 
-    segments, info = model.transcribe(audio_data, **transcribe_kwargs)
-    text = " ".join(seg.text.strip() for seg in segments).strip()
+    # Run transcription with a timeout to prevent hanging on silent/corrupt audio
+    import concurrent.futures
+    def _do_transcribe():
+        segs, inf = model.transcribe(audio_data, **transcribe_kwargs)
+        txt = " ".join(s.text.strip() for s in segs).strip()
+        return txt, inf
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_do_transcribe)
+            text, info = future.result(timeout=30)  # 30 second max
+    except concurrent.futures.TimeoutError:
+        print("WARNING: Transcription timed out after 30s, skipping.")
+        return ""
+    except Exception as e:
+        print(f"ERROR: Transcription failed: {e}")
+        return ""
 
     # Update language history (skip for forced language — don't pollute history)
     detected_lang = info.language

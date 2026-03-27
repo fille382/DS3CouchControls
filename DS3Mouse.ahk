@@ -86,6 +86,7 @@ class State {
     static R1Dictating := false
     static WaitingForTranscription := false
     static R1IsVoiceCommand := false
+    static TranscriptionStartTime := 0
     static SquareHeld := false
     static SquareRepeatTick := 0
     static TriangleNextPaste := false  ; false = next press copies, true = next press pastes
@@ -1452,6 +1453,7 @@ HandleButtons(buttons, l1Held) {
         ; Voice command mode forces English transcription
         Whisper._Send(State.R1IsVoiceCommand ? "STOP_EN`n" : "STOP`n")
         State.WaitingForTranscription := true
+        State.TranscriptionStartTime := A_TickCount
         SetTimer(PollTranscriptionResult, 100)
     }
 
@@ -1514,8 +1516,17 @@ AltTabConfirm() {
 PollTranscriptionResult() {
     resultFile := A_ScriptDir "\whisper_result.txt"
 
-    if !FileExist(resultFile)
-        return  ; Still transcribing, check again in 100ms
+    if !FileExist(resultFile) {
+        ; Timeout after 35 seconds — give up
+        if (A_TickCount - State.TranscriptionStartTime > 35000) {
+            SetTimer(PollTranscriptionResult, 0)
+            State.WaitingForTranscription := false
+            RecordingOverlay.Hide()
+            ToolTip("Transcription timed out")
+            SetTimer(() => ToolTip(), -2000)
+        }
+        return
+    }
 
     ; Result file exists — read it
     SetTimer(PollTranscriptionResult, 0)  ; Stop polling
@@ -1684,6 +1695,8 @@ ExecuteVoiceCommand(text) {
         Run("calc.exe")
     else if RegExMatch(cmd, "^(open |launch |start )?(terminal|command prompt|cmd)$")
         Run("wt.exe")
+    else if RegExMatch(cmd, "^(open |launch |start )?(claude|cloud)$")
+        Run(A_AppData "\..\Local\AnthropicClaude\claude.exe")
     else {
         matched := false
         ToolTip('Unknown: "' text '"')

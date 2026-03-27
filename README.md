@@ -99,6 +99,17 @@ Say these while holding L1+R1:
 | open explorer | File Explorer |
 | open spotify | Spotify |
 | open discord | Discord |
+| open claude | Claude Desktop |
+| open settings | Windows Settings |
+| open notepad | Notepad |
+| open calculator | Calculator |
+| open terminal | Windows Terminal |
+| minimize / maximize | Window management |
+| snap left / right | Snap window |
+| new tab / close tab | Browser tabs |
+| screenshot / snip | Screen capture |
+| lock | Lock screen |
+| mute | Toggle mute |
 
 ## Files
 
