@@ -1567,7 +1567,7 @@ PollTranscriptionResult() {
 ExecuteVoiceCommand(text) {
     ; Normalize: lowercase, trim, remove punctuation
     cmd := Trim(StrLower(text))
-    cmd := RegExReplace(cmd, "[.,!?;:\x27\x22\-]", "")
+    cmd := RegExReplace(cmd, "[,!?;:\x27\x22\-\*\#\(\)\[\]]", "")  ; Keep dots for URLs
     cmd := RegExReplace(cmd, "\s+", " ")
 
     ; Match against known commands
@@ -1697,10 +1697,25 @@ ExecuteVoiceCommand(text) {
         Run("wt.exe")
     else if RegExMatch(cmd, "^(open |launch |start )?(claude|cloud)$")
         Run(A_AppData "\..\Local\AnthropicClaude\claude.exe")
+    ; Search — "search for X", "google X"
+    else if RegExMatch(cmd, "^(search for |search |google |look up |sök på |sök )(.*)", &searchMatch) {
+        query := searchMatch[2]
+        Run("https://www.google.com/search?q=" query)
+    }
+    ; URL detection — "youtube.com", "open ikea.se", "go to google.com"
     else {
-        matched := false
-        ToolTip('Unknown: "' text '"')
-        SetTimer(() => ToolTip(), -2500)
+        urlCmd := RegExReplace(cmd, "^(open |go to |navigate to |visit |öppna )", "")
+        urlCmd := Trim(urlCmd)
+        if RegExMatch(urlCmd, "^([\w\-]+[\s.]?[\w\-]*\.(com|se|net|org|io|dev|ai|co|uk|de|no|dk|fi)(/\S*)?)$", &urlMatch) {
+            url := RegExReplace(urlMatch[1], "\s", "")
+            if !RegExMatch(url, "^https?://")
+                url := "https://" url
+            Run(url)
+        } else {
+            matched := false
+            ToolTip('Unknown: "' text '"')
+            SetTimer(() => ToolTip(), -2500)
+        }
     }
 
     if matched {

@@ -104,6 +104,7 @@ Say these while holding L1+R1:
 | open notepad | Notepad |
 | open calculator | Calculator |
 | open terminal | Windows Terminal |
+| open [url] | Navigate to URL (e.g. "open youtube.com") |
 | minimize / maximize | Window management |
 | snap left / right | Snap window |
 | new tab / close tab | Browser tabs |
