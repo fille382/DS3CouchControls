@@ -15,6 +15,9 @@ Use a DualShock 3 controller as a full desktop mouse and keyboard replacement. N
 - **Zoom lens** — L3 toggles a circular magnifier with sniper cursor mode
 - **Modifier layer** — L1 reveals an on-screen HUD showing all available shortcuts
 - **Recording overlay** — Animated sound wave visualization during voice input
+- **Game auto-pause** — Automatically pauses mouse emulation when a fullscreen game is detected
+- **Quick website launch** — Say a site name (e.g. "open youtube") to launch it instantly
+- **XInput state caching** — Optimized polling with pre-squared deadzone checks
 
 ## Requirements
 
@@ -121,6 +124,8 @@ Say these while holding L1+R1:
 | `media_control.py` | Spotify/media control helper |
 | `DS3Mouse.ico` | Custom tray icon |
 | `DS3Test.ahk` | Controller axis/button tester |
+| `block_controller_keys.py` | Blocks phantom keyboard events from DsHidMini XInput |
+| `DS3TestTools/` | Additional controller testing utilities |
 
 ## Configuration
 
@@ -138,6 +143,20 @@ Edit the `Config` class at the top of `DS3Mouse.ahk` to tune:
 - **whisper_server.py** — Python TCP server: records audio, transcribes via faster-whisper on GPU, auto-detects language
 - **media_control.py** — Python helper: controls Spotify via Windows COM automation
 - Communication via TCP on localhost:7492, audio levels via shared file for the animated overlay
+
+## Troubleshooting
+
+### Controller navigates Windows UI (Alt+Tab, Start menu, taskbar)
+
+Windows 11 lets XInput controllers navigate system UI by default. Disable the GameInput service to stop this:
+
+```powershell
+# Disable (run as Administrator)
+sc.exe stop GameInputSvc; sc.exe config GameInputSvc start= disabled
+
+# Re-enable if needed
+sc.exe config GameInputSvc start= demand; sc.exe start GameInputSvc
+```
 
 ## Known Limitations
 

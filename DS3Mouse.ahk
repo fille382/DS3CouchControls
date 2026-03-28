@@ -63,6 +63,7 @@ class Config {
 ; ── Runtime state ──
 class State {
     static Active := true
+    static GamePaused := false  ; Auto-paused due to game detection
     static Sniper := false
     static RapidScroll := false
     static L2Down := false
@@ -998,6 +999,83 @@ ShutdownAll(*) {
 }
 
 SetTimer(MainLoop, Config.PollRate)
+SetTimer(GameDetection, 2000)  ; Check every 2 seconds
+
+; ============================================================
+;  Game detection — auto-pause when a game is in foreground
+; ============================================================
+IsGameRunning() {
+    try {
+        hwnd := WinGetID("A")
+        if !hwnd
+            return false
+
+        ; Check if foreground window is fullscreen exclusive
+        ; (covers entire screen, not a desktop/taskbar/browser)
+        WinGetPos(&x, &y, &w, &h, hwnd)
+        MonitorGetWorkArea(, &mL, &mT, &mR, &mB)
+        screenW := SysGet(0)   ; SM_CXSCREEN
+        screenH := SysGet(1)   ; SM_CYSCREEN
+
+        ; Must cover entire screen (not just work area)
+        isFullscreen := (x <= 0 && y <= 0 && w >= screenW && h >= screenH)
+
+        if !isFullscreen
+            return false
+
+        ; Get process name
+        procName := StrLower(WinGetProcessName(hwnd))
+        winClass := WinGetClass(hwnd)
+
+        ; Whitelist — known non-game fullscreen apps (DON'T pause for these)
+        whitelist := ["explorer.exe", "brave.exe", "chrome.exe", "firefox.exe", "msedge.exe"
+            , "vlc.exe", "spotify.exe", "discord.exe", "code.exe"
+            , "windowsterminal.exe", "wt.exe", "notepad.exe"
+            , "powerpnt.exe", "winword.exe", "excel.exe"
+            , "mpc-hc64.exe", "mpc-hc.exe", "mpv.exe"]
+
+        for _, name in whitelist {
+            if (procName = name)
+                return false
+        }
+
+        ; If fullscreen and NOT whitelisted → probably a game
+        return true
+    }
+    return false
+}
+
+GameDetection() {
+    gameRunning := IsGameRunning()
+
+    if (gameRunning && !State.GamePaused) {
+        ; Game detected — auto-pause
+        State.GamePaused := true
+        State.Active := false
+        ToolTip("DS3Mouse AUTO-PAUSED (game detected)")
+        SetTimer(() => ToolTip(), -3000)
+        ; Release any held buttons
+        if State.L2Down {
+            Click("Right Up")
+            State.L2Down := false
+        }
+        if State.R2Down {
+            Click("Up")
+            State.R2Down := false
+        }
+        if State.CrossDown {
+            Click("Up")
+            State.CrossDown := false
+        }
+        HUD.Hide()
+    } else if (!gameRunning && State.GamePaused) {
+        ; Game exited — auto-resume
+        State.GamePaused := false
+        State.Active := true
+        ToolTip("DS3Mouse RESUMED")
+        SetTimer(() => ToolTip(), -3000)
+    }
+}
 
 ; ============================================================
 ;  Main loop
@@ -1007,10 +1085,13 @@ MainLoop() {
     if !gp.connected
         return
 
+    buttons := gp.buttons
+
     ; ── Guide/PS button toggle (works even when paused) ──
-    guideNow := (gp.buttons & XINPUT.GUIDE) != 0
+    guideNow := (buttons & 0x0400) != 0  ; XINPUT.GUIDE
     if (guideNow && !State.PrevGuide) {
         State.Active := !State.Active
+        State.GamePaused := false  ; Manual override clears auto-pause
         ToolTip(State.Active ? "DS3Mouse ACTIVE" : "DS3Mouse PAUSED")
         SetTimer(() => ToolTip(), -2000)
         if !State.Active {
@@ -1034,39 +1115,51 @@ MainLoop() {
     if !State.Active
         return
 
+    ; ── Cache frequently used values ──
+    lx := gp.lx, ly := gp.ly, rx := gp.rx, ry := gp.ry
+    lt := gp.lt, rt := gp.rt
+
     ; ── L1 held? Show/hide HUD ──
-    l1Held := (gp.buttons & XINPUT.LEFT_SHOULDER) != 0
+    l1Held := (buttons & 0x0100) != 0  ; XINPUT.LEFT_SHOULDER
     if (l1Held && !State.PrevL1)
         HUD.Show()
     else if (!l1Held && State.PrevL1)
         HUD.Hide()
     State.PrevL1 := l1Held
 
-    ; ── LEFT STICK → Cursor ──
-    MoveCursor(gp.lx, gp.ly)
+    ; ── LEFT STICK → Cursor (skip function call if in deadzone) ──
+    if (lx * lx + ly * ly > 9000000)  ; CursorDeadzone² = 3000² = 9M
+        MoveCursor(lx, ly)
+    else if (State.MoveAccumX != 0.0 || State.MoveAccumY != 0.0) {
+        State.MoveAccumX := 0.0
+        State.MoveAccumY := 0.0
+    }
 
-    ; ── RIGHT STICK → Scroll ──
-    HandleStickScroll(gp.rx, gp.ry)
+    ; ── RIGHT STICK → Scroll (skip if in deadzone) ──
+    if (rx * rx + ry * ry > 25000000)  ; ScrollDeadzone² = 5000² = 25M
+        HandleStickScroll(rx, ry)
+    else {
+        State.ScrollAccumV := 0.0
+        State.ScrollAccumH := 0.0
+    }
 
     ; ── TRIGGERS → Click ──
-    HandleTriggers(gp.lt, gp.rt)
+    HandleTriggers(lt, rt)
 
     ; ── D-PAD (only real d-pad presses, ignore if left stick is active) ──
     ; XInput leaks stick input into d-pad bits — suppress d-pad when stick moves
     ; BUT: always allow d-pad when L1 is held (modifier commands need d-pad)
-    stickMagSq := gp.lx * gp.lx + gp.ly * gp.ly
-    if (l1Held || stickMagSq < 1000000)  ; L1 bypasses stick filter
-        HandleDPad(gp.buttons, l1Held)
+    if (l1Held || lx * lx + ly * ly < 9000000)  ; ~3000 mag — d-pad physically bleeds ~2000 into stick
+        HandleDPad(buttons, l1Held)
     else {
-        ; Kill any active d-pad state when stick is moving
         State.DpadActive := false
         State.DpadRepeating := false
     }
 
     ; ── Face buttons + shoulders ──
-    HandleButtons(gp.buttons, l1Held)
+    HandleButtons(buttons, l1Held)
 
-    State.PrevButtons := gp.buttons
+    State.PrevButtons := buttons
 }
 
 ; ============================================================
@@ -1702,12 +1795,136 @@ ExecuteVoiceCommand(text) {
         query := searchMatch[2]
         Run("https://www.google.com/search?q=" query)
     }
-    ; URL detection — "youtube.com", "open ikea.se", "go to google.com"
+    ; Known websites — just say the name, no need for .com/.se
     else {
-        urlCmd := RegExReplace(cmd, "^(open |go to |navigate to |visit |öppna )", "")
+        urlCmd := RegExReplace(cmd, "^(open\s*|go\s*to\s*|navigate\s*to\s*|visit\s*|öppna\s*)", "")
         urlCmd := Trim(urlCmd)
-        if RegExMatch(urlCmd, "^([\w\-]+[\s.]?[\w\-]*\.(com|se|net|org|io|dev|ai|co|uk|de|no|dk|fi)(/\S*)?)$", &urlMatch) {
-            url := RegExReplace(urlMatch[1], "\s", "")
+        ; Also handle Whisper merging "open" into the word
+        if !RegExMatch(urlCmd, "\.(com|se|net|org|io|dev|ai|co|uk|de|no|dk|fi)")
+            urlCmd := RegExReplace(urlCmd, "^(open|goto|visit|öppna)", "")
+        urlCmd := Trim(urlCmd)
+
+        ; Lookup table for common sites
+        sites := Map(
+            "youtube", "https://youtube.com",
+            ; Search & Social
+            "google", "https://google.com",
+            "gmail", "https://gmail.com",
+            "google maps", "https://maps.google.com",
+            "maps", "https://maps.google.com",
+            "google drive", "https://drive.google.com",
+            "drive", "https://drive.google.com",
+            "google docs", "https://docs.google.com",
+            "youtube", "https://youtube.com",
+            "reddit", "https://reddit.com",
+            "twitter", "https://twitter.com",
+            "x", "https://x.com",
+            "facebook", "https://facebook.com",
+            "instagram", "https://instagram.com",
+            "linkedin", "https://linkedin.com",
+            "tiktok", "https://tiktok.com",
+            "snapchat", "https://web.snapchat.com",
+            "pinterest", "https://pinterest.com",
+            "threads", "https://threads.net",
+            "whatsapp", "https://web.whatsapp.com",
+            "telegram", "https://web.telegram.org",
+            "discord", "https://discord.com/app",
+            ; Video & Streaming
+            "netflix", "https://netflix.com",
+            "twitch", "https://twitch.tv",
+            "hbo", "https://play.hbomax.com",
+            "hbo max", "https://play.hbomax.com",
+            "disney", "https://disneyplus.com",
+            "disney plus", "https://disneyplus.com",
+            "prime video", "https://primevideo.com",
+            "viaplay", "https://viaplay.se",
+            "crunchyroll", "https://crunchyroll.com",
+            "svt play", "https://svtplay.se",
+            "svt", "https://svtplay.se",
+            "tv4 play", "https://tv4play.se",
+            ; Music
+            "spotify", "https://open.spotify.com",
+            "soundcloud", "https://soundcloud.com",
+            "apple music", "https://music.apple.com",
+            ; Shopping (Swedish + Global)
+            "amazon", "https://amazon.se",
+            "ikea", "https://ikea.se",
+            "blocket", "https://blocket.se",
+            "tradera", "https://tradera.com",
+            "prisjakt", "https://prisjakt.nu",
+            "klarna", "https://klarna.com",
+            "cdon", "https://cdon.se",
+            "zalando", "https://zalando.se",
+            "hm", "https://hm.com",
+            "h&m", "https://hm.com",
+            "elgiganten", "https://elgiganten.se",
+            "inet", "https://inet.se",
+            "komplett", "https://komplett.se",
+            "webhallen", "https://webhallen.com",
+            "mediamarkt", "https://mediamarkt.se",
+            "ebay", "https://ebay.com",
+            "aliexpress", "https://aliexpress.com",
+            "wish", "https://wish.com",
+            ; Dev & Tech
+            "github", "https://github.com",
+            "gitlab", "https://gitlab.com",
+            "stackoverflow", "https://stackoverflow.com",
+            "stack overflow", "https://stackoverflow.com",
+            "npm", "https://npmjs.com",
+            "codepen", "https://codepen.io",
+            "vercel", "https://vercel.com",
+            "netlify", "https://netlify.com",
+            "figma", "https://figma.com",
+            "notion", "https://notion.so",
+            "trello", "https://trello.com",
+            ; AI
+            "chatgpt", "https://chat.openai.com",
+            "claude", "https://claude.ai",
+            "perplexity", "https://perplexity.ai",
+            "midjourney", "https://midjourney.com",
+            "hugging face", "https://huggingface.co",
+            ; News & Info
+            "wikipedia", "https://wikipedia.org",
+            "aftonbladet", "https://aftonbladet.se",
+            "expressen", "https://expressen.se",
+            "dn", "https://dn.se",
+            "svd", "https://svd.se",
+            "bbc", "https://bbc.com",
+            "cnn", "https://cnn.com",
+            "hacker news", "https://news.ycombinator.com",
+            ; Swedish services
+            "swish", "https://swish.nu",
+            "bankid", "https://bankid.com",
+            "1177", "https://1177.se",
+            "skatteverket", "https://skatteverket.se",
+            "postnord", "https://postnord.se",
+            "systembolaget", "https://systembolaget.se",
+            "hemnet", "https://hemnet.se",
+            "eniro", "https://eniro.se",
+            "hitta", "https://hitta.se",
+            ; Gaming
+            "steam", "https://store.steampowered.com",
+            "epic games", "https://store.epicgames.com",
+            "playstation", "https://store.playstation.com",
+            "xbox", "https://xbox.com",
+            "ign", "https://ign.com",
+            ; Misc
+            "canva", "https://canva.com",
+            "dropbox", "https://dropbox.com",
+            "outlook", "https://outlook.live.com",
+            "hotmail", "https://outlook.live.com",
+            "yahoo", "https://yahoo.com",
+            "speedtest", "https://speedtest.net",
+            "translate", "https://translate.google.com",
+            "weather", "https://weather.com",
+            "wolfram", "https://wolframalpha.com"
+        )
+
+        urlCmd := RegExReplace(urlCmd, "[.\s]+$", "")  ; Strip trailing dots/spaces
+        if sites.Has(urlCmd) {
+            Run(sites[urlCmd])
+        } else if RegExMatch(urlCmd, "^([\w\-]+\.[\w\-]+(\.[\w\-]+)?(\/\S*)?)$", &urlMatch) {
+            url := urlMatch[1]
             if !RegExMatch(url, "^https?://")
                 url := "https://" url
             Run(url)
