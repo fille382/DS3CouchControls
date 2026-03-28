@@ -93,6 +93,10 @@ class State {
     static TriangleNextPaste := false  ; false = next press copies, true = next press pastes
     static AltTabActive := false       ; Alt+Tab switcher is open
     static AltTabJustClosed := false   ; Block Cross click after Alt+Tab confirm
+    static RadialVisible := false      ; Radial menu is showing
+    static RadialSelected := -1        ; -1 = center/cancel, 0-7 = segment
+    static RadialOriginX := 0          ; Cursor pos when menu opened
+    static RadialOriginY := 0
 }
 
 ; ============================================================
@@ -721,6 +725,402 @@ class ZoomLens {
 }
 
 ; ============================================================
+;  Radial Menu — GDI+ rendered pie menu on R2 hold
+; ============================================================
+class RadialMenu {
+    static Size := 700          ; Diameter in pixels (same as ZoomLens)
+    static DeadzoneSq := 64000000  ; ~8000² — stick magnitude for center/cancel
+    static NumSegments := 8
+    static hwnd := 0
+    static gdipToken := 0
+    static screenDC := 0
+    static memDC := 0
+    static hBmp := 0
+    static oldBmp := 0
+    static pGraphics := 0
+    static ptSrc := 0
+    static ptDst := 0
+    static szBuf := 0
+    static bfBuf := 0
+    ; Brushes
+    static bgBrush := 0
+    static segBrush := 0
+    static hoverBrush := 0
+    static centerBrush := 0
+    static linePen := 0
+    static textBrush := 0
+    static dimIconBrush := 0
+    static textFont := 0
+    static iconFont := 0
+    static iconFontFamily := 0
+    static centerFont := 0
+    static textFormat := 0
+    static fontFamily := 0
+    static labelBrush := 0
+    static ringPen := 0
+    static innerPen := 0
+    ; Menu items: [label, action_type, action_data]
+    static Items := []
+
+    static Init() {
+        S := RadialMenu.Size
+
+        ; Items: [label, type, data]
+        ; type: "send" = Send keys, "run" = Run command
+        ; Icons from Segoe MDL2 Assets font
+        RadialMenu.Items := [
+            {label: "Screenshot", icon: Chr(0xE714), type: "send", data: "#+s"},
+            {label: "Discord",    icon: Chr(0xE8BD), type: "run",  data: A_AppData "\..\Local\Discord\Update.exe --processStart Discord.exe"},
+            {label: "Spotify",    icon: Chr(0xE8D6), type: "run",  data: "spotify:"},
+            {label: "Settings",   icon: Chr(0xE713), type: "send", data: "ms-settings:"},
+            {label: "Desktop",    icon: Chr(0xE737), type: "send", data: "#d"},
+            {label: "Notify",     icon: Chr(0xE7E7), type: "send", data: "#n"},
+            {label: "Browser",    icon: Chr(0xE774), type: "run",  data: "brave.exe"},
+            {label: "Lock",       icon: Chr(0xE72E), type: "send", data: "#l"}
+        ]
+
+        ; Ensure gdiplus.dll is loaded and reuse token
+        DllCall("LoadLibrary", "Str", "gdiplus", "Ptr")
+        RadialMenu.gdipToken := RecordingOverlay.gdipToken
+
+        ; Create layered window
+        exStyle := 0x80000 | 0x8 | 0x80 | 0x20 | 0x08000000
+        RadialMenu.hwnd := DllCall("CreateWindowEx"
+            , "UInt", exStyle
+            , "Str", "Static"
+            , "Str", ""
+            , "UInt", 0x80000000
+            , "Int", 0, "Int", 0
+            , "Int", S, "Int", S
+            , "Ptr", 0, "Ptr", 0, "Ptr", 0, "Ptr", 0, "Ptr")
+
+        ; Make it circular
+        hRgn := DllCall("CreateEllipticRgn", "Int", 0, "Int", 0, "Int", S, "Int", S, "Ptr")
+        DllCall("SetWindowRgn", "Ptr", RadialMenu.hwnd, "Ptr", hRgn, "Int", 1)
+
+        ; Create DC and bitmap
+        RadialMenu.screenDC := DllCall("GetDC", "Ptr", 0, "Ptr")
+        RadialMenu.memDC := DllCall("CreateCompatibleDC", "Ptr", RadialMenu.screenDC, "Ptr")
+        RadialMenu.hBmp := DllCall("CreateCompatibleBitmap", "Ptr", RadialMenu.screenDC, "Int", S, "Int", S, "Ptr")
+        RadialMenu.oldBmp := DllCall("SelectObject", "Ptr", RadialMenu.memDC, "Ptr", RadialMenu.hBmp, "Ptr")
+
+        ; GDI+ Graphics
+        pg := 0
+        DllCall("gdiplus\GdipCreateFromHDC", "Ptr", RadialMenu.memDC, "Ptr*", &pg)
+        DllCall("gdiplus\GdipSetSmoothingMode", "Ptr", pg, "Int", 4)  ; AntiAlias
+        DllCall("gdiplus\GdipSetTextRenderingHint", "Ptr", pg, "Int", 5)  ; AntiAlias
+        RadialMenu.pGraphics := pg
+
+        ; Create brushes — GTA 5 style (glass-like, semi-transparent)
+        br := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", 0xC0101018, "Ptr*", &br)
+        RadialMenu.bgBrush := br
+
+        br := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", 0x90282838, "Ptr*", &br)
+        RadialMenu.segBrush := br
+
+        br := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", 0xB0505878, "Ptr*", &br)
+        RadialMenu.hoverBrush := br
+
+        br := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", 0xC0181820, "Ptr*", &br)
+        RadialMenu.centerBrush := br
+
+        br := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", 0xFFFFFFFF, "Ptr*", &br)
+        RadialMenu.textBrush := br
+
+        ; Dim icon brush (non-selected segments)
+        br := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", 0x90CCCCCC, "Ptr*", &br)
+        RadialMenu.dimIconBrush := br
+
+        ; Thin line pen for segment dividers
+        pen := 0
+        DllCall("gdiplus\GdipCreatePen1", "UInt", 0x30FFFFFF, "Float", 1.0, "Int", 2, "Ptr*", &pen)
+        RadialMenu.linePen := pen
+
+        ; Outer ring pen
+        ringPen := 0
+        DllCall("gdiplus\GdipCreatePen1", "UInt", 0x50FFFFFF, "Float", 2.0, "Int", 2, "Ptr*", &ringPen)
+        RadialMenu.ringPen := ringPen
+
+        ; Inner ring pen
+        innerPen := 0
+        DllCall("gdiplus\GdipCreatePen1", "UInt", 0x40FFFFFF, "Float", 1.5, "Int", 2, "Ptr*", &innerPen)
+        RadialMenu.innerPen := innerPen
+
+        ; Fonts via GDI+
+        ff := 0
+        DllCall("gdiplus\GdipCreateFontFamilyFromName", "WStr", "Segoe UI", "Ptr", 0, "Ptr*", &ff)
+        RadialMenu.fontFamily := ff
+
+        ; Label font (small)
+        fnt := 0
+        DllCall("gdiplus\GdipCreateFont", "Ptr", ff, "Float", 13.0, "Int", 0, "Int", 2, "Ptr*", &fnt)
+        RadialMenu.textFont := fnt
+
+        ; Center label font (shows selected item name)
+        centerFnt := 0
+        DllCall("gdiplus\GdipCreateFont", "Ptr", ff, "Float", 16.0, "Int", 1, "Int", 2, "Ptr*", &centerFnt)
+        RadialMenu.centerFont := centerFnt
+
+        ; Icon font (large Segoe UI Symbol / Segoe MDL2 Assets for icons)
+        ffIcon := 0
+        DllCall("gdiplus\GdipCreateFontFamilyFromName", "WStr", "Segoe MDL2 Assets", "Ptr", 0, "Ptr*", &ffIcon)
+        if !ffIcon
+            ffIcon := ff  ; Fallback to Segoe UI
+        RadialMenu.iconFontFamily := ffIcon
+
+        fntIcon := 0
+        DllCall("gdiplus\GdipCreateFont", "Ptr", ffIcon, "Float", 60.0, "Int", 0, "Int", 2, "Ptr*", &fntIcon)
+        RadialMenu.iconFont := fntIcon
+
+        sf := 0
+        DllCall("gdiplus\GdipCreateStringFormat", "Int", 0, "Int", 0, "Ptr*", &sf)
+        DllCall("gdiplus\GdipSetStringFormatAlign", "Ptr", sf, "Int", 1)       ; Center
+        DllCall("gdiplus\GdipSetStringFormatLineAlign", "Ptr", sf, "Int", 1)   ; Center
+        RadialMenu.textFormat := sf
+
+        ; Dim text brush for labels
+        dimBr := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", 0xBBCCCCCC, "Ptr*", &dimBr)
+        RadialMenu.labelBrush := dimBr
+
+        ; UpdateLayeredWindow buffers
+        RadialMenu.ptSrc := Buffer(8, 0)
+        RadialMenu.ptDst := Buffer(8, 0)
+        RadialMenu.szBuf := Buffer(8, 0)
+        NumPut("Int", S, RadialMenu.szBuf, 0)
+        NumPut("Int", S, RadialMenu.szBuf, 4)
+        RadialMenu.bfBuf := Buffer(4, 0)
+        NumPut("UChar", 0, RadialMenu.bfBuf, 0)
+        NumPut("UChar", 0, RadialMenu.bfBuf, 1)
+        NumPut("UChar", 255, RadialMenu.bfBuf, 2)
+        NumPut("UChar", 1, RadialMenu.bfBuf, 3)   ; AC_SRC_ALPHA
+    }
+
+    static Show(mx, my) {
+        if State.RadialVisible
+            return
+        State.RadialVisible := true
+        State.RadialSelected := -1
+        State.RadialOriginX := mx
+        State.RadialOriginY := my
+
+        S := RadialMenu.Size
+        winX := mx - S // 2
+        winY := my - S // 2
+
+        ; Clamp to screen
+        MonitorGetWorkArea(, &mL, &mT, &mR, &mB)
+        if (winX < mL)
+            winX := mL
+        if (winY < mT)
+            winY := mT
+        if (winX + S > mR)
+            winX := mR - S
+        if (winY + S > mB)
+            winY := mB - S
+
+        NumPut("Int", winX, RadialMenu.ptDst, 0)
+        NumPut("Int", winY, RadialMenu.ptDst, 4)
+
+        RadialMenu._Draw(-1)
+
+        DllCall("ShowWindow", "Ptr", RadialMenu.hwnd, "Int", 8)  ; SW_SHOWNA
+        DllCall("SetWindowPos", "Ptr", RadialMenu.hwnd, "Ptr", -1
+            , "Int", winX, "Int", winY, "Int", S, "Int", S
+            , "UInt", 0x0040 | 0x0010)  ; SWP_SHOWWINDOW | SWP_NOACTIVATE
+    }
+
+    static Hide() {
+        if !State.RadialVisible
+            return
+        State.RadialVisible := false
+        DllCall("ShowWindow", "Ptr", RadialMenu.hwnd, "Int", 0)  ; SW_HIDE
+    }
+
+    static Update(rx, ry) {
+        if !State.RadialVisible
+            return
+
+        magSq := rx * rx + ry * ry
+        if (magSq < RadialMenu.DeadzoneSq) {
+            ; Center = cancel
+            if (State.RadialSelected != -1) {
+                State.RadialSelected := -1
+                RadialMenu._Draw(-1)
+            }
+            return
+        }
+
+        ; Calculate angle: atan2(-ry, rx) because Y is inverted on stick
+        ; Map to 0..2π, then to segment index
+        angle := ATan2(-ry, rx)
+        if (angle < 0)
+            angle += 2 * 3.14159265
+
+        ; Offset so segment 0 (top) is centered at 12 o'clock
+        ; Segment 0 = top = angle π/2, going clockwise
+        ; Remap: rotate by +π/2 so 0 = top, then clockwise
+        segAngle := 2 * 3.14159265 / RadialMenu.NumSegments
+        remapped := Mod(angle + 3.14159265 / 2 + segAngle / 2, 2 * 3.14159265)
+        idx := Integer(remapped / segAngle)
+        if (idx >= RadialMenu.NumSegments)
+            idx := RadialMenu.NumSegments - 1
+
+        if (idx != State.RadialSelected) {
+            State.RadialSelected := idx
+            RadialMenu._Draw(idx)
+        }
+    }
+
+    static Execute(idx) {
+        if (idx < 0 || idx >= RadialMenu.Items.Length)
+            return  ; Cancel
+
+        item := RadialMenu.Items[idx + 1]  ; AHK is 1-indexed
+        ; Small delay to let menu fully close before sending keys
+        SetTimer(() => RadialMenu._RunAction(item), -50)
+    }
+
+    static _RunAction(item) {
+        if (item.type = "send")
+            Send(item.data)
+        else if (item.type = "run") {
+            try Run(item.data)
+        }
+    }
+
+    static _Draw(hovered) {
+        pg := RadialMenu.pGraphics
+        S := RadialMenu.Size
+        half := S / 2.0
+        numSeg := RadialMenu.NumSegments
+        segAngle := 360.0 / numSeg
+        pi := 3.14159265
+        innerR := 100.0
+        outerR := half - 4.0
+
+        ; Clear
+        DllCall("gdiplus\GdipGraphicsClear", "Ptr", pg, "UInt", 0x00000000)
+
+        ; Background disc
+        DllCall("gdiplus\GdipFillEllipse", "Ptr", pg, "Ptr", RadialMenu.bgBrush
+            , "Float", 2.0, "Float", 2.0, "Float", Float(S - 4), "Float", Float(S - 4))
+
+        ; Draw segments
+        loop numSeg {
+            i := A_Index - 1
+            startDeg := -90 + (i * segAngle) - (segAngle / 2)
+            brush := (i = hovered) ? RadialMenu.hoverBrush : RadialMenu.segBrush
+
+            ; Pie slice (outer ring)
+            DllCall("gdiplus\GdipFillPie", "Ptr", pg, "Ptr", brush
+                , "Float", half - outerR, "Float", half - outerR
+                , "Float", outerR * 2, "Float", outerR * 2
+                , "Float", Float(startDeg), "Float", Float(segAngle - 1.0))
+        }
+
+        ; Cut out inner circle (re-fill with center color to create donut)
+        DllCall("gdiplus\GdipFillEllipse", "Ptr", pg, "Ptr", RadialMenu.centerBrush
+            , "Float", half - innerR, "Float", half - innerR
+            , "Float", innerR * 2, "Float", innerR * 2)
+
+        ; Divider lines
+        loop numSeg {
+            i := A_Index - 1
+            lineRad := (-90 + (i * segAngle) - (segAngle / 2)) * pi / 180
+            x1 := half + innerR * Cos(lineRad)
+            y1 := half + innerR * Sin(lineRad)
+            x2 := half + outerR * Cos(lineRad)
+            y2 := half + outerR * Sin(lineRad)
+            DllCall("gdiplus\GdipDrawLine", "Ptr", pg, "Ptr", RadialMenu.linePen
+                , "Float", Float(x1), "Float", Float(y1)
+                , "Float", Float(x2), "Float", Float(y2))
+        }
+
+        ; Outer ring border
+        DllCall("gdiplus\GdipDrawEllipse", "Ptr", pg, "Ptr", RadialMenu.ringPen
+            , "Float", half - outerR, "Float", half - outerR
+            , "Float", outerR * 2, "Float", outerR * 2)
+
+        ; Inner ring border
+        DllCall("gdiplus\GdipDrawEllipse", "Ptr", pg, "Ptr", RadialMenu.innerPen
+            , "Float", half - innerR, "Float", half - innerR
+            , "Float", innerR * 2, "Float", innerR * 2)
+
+        ; Draw icons in segments
+        loop numSeg {
+            i := A_Index - 1
+            midDeg := -90 + (i * segAngle)
+            midRad := midDeg * pi / 180
+            iconR := (innerR + outerR) / 2
+            ix := half + iconR * Cos(midRad)
+            iy := half + iconR * Sin(midRad)
+            item := RadialMenu.Items[i + 1]
+            iconBrush := (i = hovered) ? RadialMenu.textBrush : RadialMenu.dimIconBrush
+
+            DllCall("gdiplus\GdipDrawString", "Ptr", pg
+                , "WStr", item.icon, "Int", -1
+                , "Ptr", RadialMenu.iconFont
+                , "Ptr", RadialMenu._MakeRectF(ix - 50, iy - 40, 100, 80)
+                , "Ptr", RadialMenu.textFormat
+                , "Ptr", iconBrush)
+        }
+
+        ; Center text — show selected item name or "Cancel"
+        centerLabel := (hovered >= 0 && hovered < RadialMenu.Items.Length)
+            ? RadialMenu.Items[hovered + 1].label
+            : "Cancel"
+        DllCall("gdiplus\GdipDrawString", "Ptr", pg
+            , "WStr", centerLabel, "Int", -1
+            , "Ptr", RadialMenu.centerFont
+            , "Ptr", RadialMenu._MakeRectF(half - 80, half - 14, 160, 28)
+            , "Ptr", RadialMenu.textFormat
+            , "Ptr", RadialMenu.textBrush)
+
+        ; Update layered window
+        DllCall("UpdateLayeredWindow", "Ptr", RadialMenu.hwnd
+            , "Ptr", RadialMenu.screenDC
+            , "Ptr", RadialMenu.ptDst
+            , "Ptr", RadialMenu.szBuf
+            , "Ptr", RadialMenu.memDC
+            , "Ptr", RadialMenu.ptSrc
+            , "UInt", 0
+            , "Ptr", RadialMenu.bfBuf
+            , "UInt", 2)
+    }
+
+    static _rectBuf := Buffer(16, 0)
+    static _MakeRectF(x, y, w, h) {
+        NumPut("Float", Float(x), RadialMenu._rectBuf, 0)
+        NumPut("Float", Float(y), RadialMenu._rectBuf, 4)
+        NumPut("Float", Float(w), RadialMenu._rectBuf, 8)
+        NumPut("Float", Float(h), RadialMenu._rectBuf, 12)
+        return RadialMenu._rectBuf.Ptr
+    }
+}
+
+; Helper: atan2 (AHK v2 doesn't have built-in atan2)
+ATan2(y, x) {
+    if (x > 0)
+        return ATan(y / x)
+    if (x < 0 && y >= 0)
+        return ATan(y / x) + 3.14159265
+    if (x < 0 && y < 0)
+        return ATan(y / x) - 3.14159265
+    if (x = 0 && y > 0)
+        return 3.14159265 / 2
+    if (x = 0 && y < 0)
+        return -3.14159265 / 2
+    return 0
+}
+
+; ============================================================
 ;  XInput via DLL
 ; ============================================================
 class XI {
@@ -968,6 +1368,7 @@ HUD.Init()
 ClipboardToast.Init()
 RecordingOverlay.Init()
 ZoomLens.Init()
+RadialMenu.Init()
 
 try TraySetIcon(A_ScriptDir "\DS3Mouse.ico")
 A_IconTip := "DS3Mouse — Active (XInput " Config.UserIndex ")"
@@ -1032,7 +1433,9 @@ IsGameRunning() {
             , "vlc.exe", "spotify.exe", "discord.exe", "code.exe"
             , "windowsterminal.exe", "wt.exe", "notepad.exe"
             , "powerpnt.exe", "winword.exe", "excel.exe"
-            , "mpc-hc64.exe", "mpc-hc.exe", "mpv.exe"]
+            , "mpc-hc64.exe", "mpc-hc.exe", "mpv.exe"
+            , "snippingtool.exe", "screenclippinghost.exe"
+            , "taskmgr.exe", "powershell.exe", "pwsh.exe"]
 
         for _, name in whitelist {
             if (procName = name)
@@ -1127,18 +1530,20 @@ MainLoop() {
         HUD.Hide()
     State.PrevL1 := l1Held
 
-    ; ── LEFT STICK → Cursor (skip function call if in deadzone) ──
-    if (lx * lx + ly * ly > 9000000)  ; CursorDeadzone² = 3000² = 9M
+    ; ── LEFT STICK → Radial menu or Cursor ──
+    if State.RadialVisible {
+        RadialMenu.Update(lx, ly)
+    } else if (lx * lx + ly * ly > 9000000) {  ; CursorDeadzone² = 3000² = 9M
         MoveCursor(lx, ly)
-    else if (State.MoveAccumX != 0.0 || State.MoveAccumY != 0.0) {
+    } else if (State.MoveAccumX != 0.0 || State.MoveAccumY != 0.0) {
         State.MoveAccumX := 0.0
         State.MoveAccumY := 0.0
     }
 
     ; ── RIGHT STICK → Scroll (skip if in deadzone) ──
-    if (rx * rx + ry * ry > 25000000)  ; ScrollDeadzone² = 5000² = 25M
+    if (rx * rx + ry * ry > 25000000) {  ; ScrollDeadzone² = 5000² = 25M
         HandleStickScroll(rx, ry)
-    else {
+    } else {
         State.ScrollAccumV := 0.0
         State.ScrollAccumH := 0.0
     }
@@ -1305,10 +1710,15 @@ HandleTriggers(lt, rt) {
 
     r2Now := (rt >= thresh)
     if (r2Now && !State.R2Down) {
-        Click("Down")
+        ; Open radial menu instead of click
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&mx, &my)
+        RadialMenu.Show(mx, my)
         State.R2Down := true
     } else if (!r2Now && State.R2Down) {
-        Click("Up")
+        ; Release → execute selected action or cancel
+        RadialMenu.Execute(State.RadialSelected)
+        RadialMenu.Hide()
         State.R2Down := false
     }
 }
